@@ -1,0 +1,11 @@
+# Virtual environment
+.venv/
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# Editor/OS clutter
+.vscode/
+.DS_Store
+Thumbs.db
