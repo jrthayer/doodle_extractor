@@ -12,3 +12,7 @@ Thumbs.db
 
 # Images
 *.png
+# PyInstaller build output
+build/
+dist/
+*.spec
