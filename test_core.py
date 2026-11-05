@@ -71,6 +71,33 @@ def test_pipeline():
     print("pipeline ok")
 
 
+def circle_loop(cx=400, cy=400, r=190, n=60):
+    t = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    return np.stack([cx + r * np.cos(t), cy + r * np.sin(t)], axis=1).astype(np.int32)
+
+
+def test_pieces():
+    bgr, ink, grid, specks, paper = fake_photo()
+    flat, mask = core.prepare(bgr)
+    s = core.Settings()
+
+    # Loop around the circle only (the diagonal line starts at x=650)
+    piece = core.process_piece(flat, mask, s, circle_loop())
+    assert (piece[:, :, :3] == 255).all()
+    ph, pw = piece.shape[:2]
+    # circle: centre (400, 400), radius 150, 6px stroke -> ~306px across + 2 * 8 pad
+    assert abs(pw - 322) <= 6 and abs(ph - 322) <= 6, (pw, ph)
+    assert piece[:, :, 3].max() == 255, "circle ink present"
+
+    # Loop around nothing: falls back to the loop's own bounds, fully transparent
+    empty = core.process_piece(flat, mask, s, [(150, 600), (250, 600), (250, 680), (150, 680)])
+    assert empty.shape[:2] == (81, 101) and empty[:, :, 3].max() == 0, empty.shape
+
+    # Loop running off the image edge doesn't crash
+    core.process_piece(flat, mask, s, [(-50, -50), (300, -50), (300, 300), (-50, 300)])
+    print("pieces ok")
+
+
 def test_unicode_path():
     bgr = fake_photo()[0]
     with tempfile.TemporaryDirectory() as d:
@@ -94,28 +121,114 @@ def test_gui():
         src = Path(d) / "photo.png"
         core.save_png(src, bgr)
         root = tk.Tk()
-        root.withdraw()
+        root.geometry("1300x800")
         app = DoodleApp(root)
         root.update()
         assert app.open_path(src)
+        root.update()
         app.white.set(150)
         app.min_speck.set(50)
         app.auto_crop.set(True)
         app.on_white()
-        app.redraw()
+        app.refresh()
         for mode in ("Dark", "Checker", "Light"):
             app.bg_mode.set(mode)
-            app.redraw()
+            app.refresh()
+
+        # Zooming keeps the photo point under the mouse in place
+        before = app.to_image(200, 150)
+        app.zoom_at(200, 150, 2.0)
+        after = app.to_image(200, 150)
+        assert max(abs(before[0] - after[0]), abs(before[1] - after[1])) < 1e-6, (before, after)
+        app.zoom_to(100)                       # clamped to the max
+        assert app.scale == 8.0 and not app.fit
+        app.zoom_to(0.0001)                    # clamped to fit
+        assert app.fit
+        app.zoom_to(1.0)
+        app._pan_start(type("E", (), {"x": 300, "y": 300})())
+        app._pan_move(type("E", (), {"x": 200, "y": 250})())
+        app._pan_end(None)
+        app.zoom_fit()
         out = Path(d) / "photo_ink.png"
         assert app.save_path(out)
         saved = cv2.imdecode(np.fromfile(str(out), np.uint8), cv2.IMREAD_UNCHANGED)
         assert saved.shape[2] == 4 and saved.shape[:2] != bgr.shape[:2], "cropped output"
+
+        # Lasso two pieces with simulated mouse drags (image -> canvas coords)
+        class Ev:
+            def __init__(self, x, y):
+                self.x, self.y = int(x), int(y)
+
+        def drag(loop):
+            pts = [app.to_canvas(x, y) for x, y in loop]
+            app._lasso_start(Ev(*pts[0]))
+            for p in pts[1:]:
+                app._lasso_move(Ev(*p))
+            app._lasso_end(Ev(*pts[-1]))
+
+        app.min_speck.set(0)
+        drag(circle_loop())
+        drag([(620, 220), (980, 220), (980, 630), (620, 630)])   # around the line
+        app._lasso_start(Ev(10, 10)); app._lasso_end(Ev(10, 10))  # a click: ignored
+        assert len(app.pieces) == 2, len(app.pieces)
+        root.update()
+
+        p1 = Path(d) / "one.png"
+        assert app.save_piece(0, p1)
+        one = cv2.imdecode(np.fromfile(str(p1), np.uint8), cv2.IMREAD_UNCHANGED)
+        assert abs(one.shape[1] - 322) <= 8, one.shape
+
+        out_dir = Path(d) / "pieces"
+        out_dir.mkdir()
+        written = app.save_all(out_dir)
+        assert [p.name for p in written] == ["photo_piece1.png", "photo_piece2.png"]
+        line = cv2.imdecode(np.fromfile(str(written[1]), np.uint8), cv2.IMREAD_UNCHANGED)
+        assert abs(line.shape[1] - (300 + 8 + 16)) <= 10, line.shape   # line is 300px wide
+
+        # Zoomed in, a loop still lands in the right place on the photo
+        app.zoom_to(2.0, 0, 0)
+        app.vx, app.vy = 300, 300
+        app._clamp_view()
+        drag([(320, 320), (480, 320), (480, 480), (320, 480)])
+        poly = app.pieces[-1]
+        assert abs(poly[:, 0].min() - 320) <= 1 and abs(poly[:, 1].max() - 480) <= 1, poly
+
+        app.select_piece(0)
+        app.delete_piece(0)
+        assert len(app.pieces) == 2 and app.selected == 0
         root.destroy()
     print("gui ok")
 
 
+def test_preview_keeps_thin_lines():
+    """At fit-to-window zoom on a big photo, thin lines must still show."""
+    import tkinter as tk
+    from doodle_gui import DoodleApp
+
+    H, W = 3000, 4000
+    img = np.full((H, W), 225, np.uint8)
+    cv2.line(img, (500, 1500), (3500, 1500), 40, 2)        # 2px pen line
+    with tempfile.TemporaryDirectory() as d:
+        src = Path(d) / "big.png"
+        core.save_png(src, cv2.cvtColor(img, cv2.COLOR_GRAY2BGR))
+        root = tk.Tk()
+        root.geometry("1300x800")
+        app = DoodleApp(root)
+        root.update()
+        app.open_path(src)
+        root.update()
+        app.zoom_fit()
+        assert app.scale < 0.25, app.scale
+        shown, _, _ = app._view_alpha()
+        assert shown.max() > 60, f"line too faint in preview: {shown.max()}"
+        root.destroy()
+    print("thin lines ok")
+
+
 if __name__ == "__main__":
     test_pipeline()
+    test_pieces()
     test_unicode_path()
     test_gui()
+    test_preview_keeps_thin_lines()
     print("all tests passed")

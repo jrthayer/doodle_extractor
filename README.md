@@ -14,7 +14,21 @@ Run `dist\DoodleConverter.exe` (or `python doodle_gui.py`). You can also drag a 
    - **Crop to the drawing** + **padding**: trims the empty page (shown as a dashed box).
    - **Detect paper**: ignores the desk around the page.
    - The preview background and line color are for viewing only. The saved file is always white.
-3. **Save PNG…** (Ctrl+S): choose where to save it.
+3. **Save PNG…** (Ctrl+S): choose where to save the whole image.
+
+**Zoom:** scroll over the preview to zoom around the cursor, right-drag (or middle-drag) to pan.
+The toolbar has −, +, **Fit** and **100%**; Ctrl+0 fits, Ctrl+plus and Ctrl+minus zoom.
+
+### Cutting out pieces
+Several drawings on one page? **Drag around a drawing** on the preview. When you let go the loop
+closes and the drawing becomes a **piece** in the panel on the right, while the full photo stays so
+you can loop around the next one.
+- Each piece is cropped to the ink inside its loop (plus the padding slider) and follows the
+  current slider settings.
+- **Save…** on a row saves that piece; **Save all…** writes every piece to a folder as
+  `<photo>_piece1.png`, `<photo>_piece2.png`, …
+- Click a row to select it (highlighted orange on the preview). **Delete** removes the selected
+  piece, and **Esc** cancels a loop you're drawing.
 
 ## Command line
 ```

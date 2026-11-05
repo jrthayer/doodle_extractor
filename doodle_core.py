@@ -94,16 +94,22 @@ def prepare(bgr, detect_paper=True):
 
 # ------------------------------------------------ fast: per setting change
 
-def make_alpha(flat, mask, black, white):
-    """Map darkness to alpha: <= black -> 255, >= white -> 0, soft between."""
+def levels_lut(black, white):
+    """256-entry table: <= black -> 255, >= white -> 0, soft between."""
     black, white = int(black), int(white)
     if white <= black:
         white = black + 1
-    f = flat.astype(np.float32)
+    f = np.arange(256, dtype=np.float32)
     alpha = np.clip((white - f) / (white - black), 0, 1)
-    alpha = (alpha * 255).astype(np.uint8)
+    return (alpha * 255).astype(np.uint8)
+
+
+def make_alpha(flat, mask, black, white):
+    """Map darkness to alpha. A lookup table gives the same result as doing
+    the math per pixel, but fast enough for full-size live previews."""
+    alpha = cv2.LUT(flat, levels_lut(black, white))
     if mask is not None:
-        alpha[mask == 0] = 0
+        alpha = cv2.bitwise_and(alpha, mask)  # mask is 0 or 255
     return alpha
 
 
@@ -120,10 +126,12 @@ def remove_specks(alpha, min_area):
 
 def crop_box(alpha, pad):
     """Bounding box (x, y, w, h) of the ink plus padding, or None if empty."""
-    pts = cv2.findNonZero(alpha)
-    if pts is None:
+    rows = np.flatnonzero(alpha.any(axis=1))
+    if rows.size == 0:
         return None
-    x, y, w, h = cv2.boundingRect(pts)
+    cols = np.flatnonzero(alpha.any(axis=0))
+    x, y = int(cols[0]), int(rows[0])
+    w, h = int(cols[-1]) - x + 1, int(rows[-1]) - y + 1
     H, W = alpha.shape
     x0, y0 = max(x - pad, 0), max(y - pad, 0)
     x1, y1 = min(x + w + pad, W), min(y + h + pad, H)
@@ -142,6 +150,42 @@ def finish_alpha(flat, mask, s: Settings):
     """Alpha after levels and speck removal (no cropping)."""
     alpha = make_alpha(flat, mask, s.black, s.white)
     return remove_specks(alpha, s.min_speck)
+
+
+def cut_piece(alpha, polygon, pad):
+    """Keep only the ink inside `polygon` (list of (x, y) points), cropped
+    to that ink plus `pad`. The polygon edge is anti-aliased."""
+    H, W = alpha.shape
+    pts = np.asarray(polygon, np.int32).reshape(-1, 2)
+
+    # Only work inside the loop's bounding box (plus padding room): much
+    # faster than masking the whole photo.
+    x0 = max(int(pts[:, 0].min()) - pad - 1, 0)
+    y0 = max(int(pts[:, 1].min()) - pad - 1, 0)
+    x1 = min(int(pts[:, 0].max()) + pad + 2, W)
+    y1 = min(int(pts[:, 1].max()) + pad + 2, H)
+    if x1 <= x0 or y1 <= y0:  # loop is entirely off the image
+        return np.zeros((1, 1), np.uint8)
+
+    local = (pts - (x0, y0)).reshape(-1, 1, 2)
+    sub = alpha[y0:y1, x0:x1]
+    region = np.zeros_like(sub)
+    cv2.fillPoly(region, [local], 255, lineType=cv2.LINE_AA)
+    cut = np.minimum(sub, region)
+
+    box = crop_box(cut, pad)
+    if box is None:  # no ink inside: fall back to the loop's own bounds
+        sh, sw = cut.shape
+        x, y, w, h = cv2.boundingRect(local)
+        x, y = min(max(x, 0), sw - 1), min(max(y, 0), sh - 1)
+        box = (x, y, max(min(w, sw - x), 1), max(min(h, sh - y), 1))
+    x, y, w, h = box
+    return cut[y:y + h, x:x + w]
+
+
+def process_piece(flat, mask, s: Settings, polygon):
+    """Output image for one lassoed piece."""
+    return to_rgba(cut_piece(finish_alpha(flat, mask, s), polygon, s.pad))
 
 
 def process(flat, mask, s: Settings):
