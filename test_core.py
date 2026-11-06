@@ -190,7 +190,7 @@ def test_gui():
         app.vx, app.vy = 300, 300
         app._clamp_view()
         drag([(320, 320), (480, 320), (480, 480), (320, 480)])
-        poly = app.pieces[-1]
+        poly = app.piece_poly(-1)
         assert abs(poly[:, 0].min() - 320) <= 1 and abs(poly[:, 1].max() - 480) <= 1, poly
 
         app.select_piece(0)
@@ -198,6 +198,153 @@ def test_gui():
         assert len(app.pieces) == 2 and app.selected == 0
         root.destroy()
     print("gui ok")
+
+
+def test_rotation_core():
+    bgr = fake_photo()[0]
+    flat, mask = core.prepare(bgr)
+    s = core.Settings(min_speck=50)
+    base = core.process(flat, mask, s)
+
+    # Quarter turns are lossless: same as rotating the finished PNG
+    for q, code in [(1, cv2.ROTATE_90_CLOCKWISE), (2, cv2.ROTATE_180),
+                    (3, cv2.ROTATE_90_COUNTERCLOCKWISE)]:
+        rf, rm = core.rotate_prepared(flat, mask, q)
+        assert np.array_equal(core.process(rf, rm, s), cv2.rotate(base, code)), q
+
+    # Any angle: canvas grows, corners are transparent, ink survives
+    rf, rm = core.rotate_prepared(flat, mask, 0, 12.5)
+    out = core.process(rf, rm, s)
+    assert out.shape[0] > base.shape[0] and out.shape[1] > base.shape[1]
+    a = out[:, :, 3]
+    assert a[:20, :20].max() == 0 and a[-20:, -20:].max() == 0, "corners transparent"
+    assert (a > 240).sum() > 0.8 * (base[:, :, 3] > 240).sum(), "ink kept"
+
+    print("rotation core ok")
+
+
+def test_piece_source():
+    """A piece loaded on its own converts the same as cutting it from the page."""
+    bgr = fake_photo()[0]
+    flat, mask = core.prepare(bgr)
+    s = core.Settings(auto_crop=True)
+    loop = circle_loop()                          # circle only, not the line
+
+    sub, sub_mask = core.piece_source(flat, mask, loop)
+    assert sub.shape == (2 * 190 + 2 * 24 + 1, 2 * 190 + 2 * 24 + 1), sub.shape
+    alone = core.process(sub, sub_mask, s)
+    cut = core.process_piece(flat, mask, s, loop)
+    assert abs(alone.shape[0] - cut.shape[0]) <= 2 and abs(alone.shape[1] - cut.shape[1]) <= 2
+    assert sub[0, 0] == 255 and sub[-1, -1] == 255, "outside the loop is paper"
+    print("piece source ok")
+
+
+def test_rotation_gui():
+    import tkinter as tk
+    from doodle_gui import DoodleApp
+
+    bgr = fake_photo()[0]      # 1200 x 900, circle centred at (400, 400)
+    with tempfile.TemporaryDirectory() as d:
+        src = Path(d) / "photo.png"
+        core.save_png(src, bgr)
+        root = tk.Tk()
+        root.geometry("1300x800")
+        app = DoodleApp(root)
+        root.update()
+        app.open_path(src)
+        root.update()
+
+        app.add_piece(circle_loop())
+
+        def centre():
+            p = app.piece_poly(0)
+            return p[:, 0].mean(), p[:, 1].mean()
+
+        # Rotate the photo 90 degrees clockwise: the loop follows the circle
+        app.rotate_photo(1)
+        assert app.flat.shape == (1200, 900)
+        cx, cy = centre()
+        assert abs(cx - (899 - 400)) < 2 and abs(cy - 400) < 2, (cx, cy)
+        out = Path(d) / "circle.png"
+        assert app.save_piece(0, out)
+        img = cv2.imdecode(np.fromfile(str(out), np.uint8), cv2.IMREAD_UNCHANGED)
+        assert abs(img.shape[0] - 322) <= 6 and abs(img.shape[1] - 322) <= 6, img.shape
+
+        # Straighten slider: still the same circle
+        app.angle.set(20)
+        app.apply_rotation()
+        assert app.save_piece(0, out)
+        img = cv2.imdecode(np.fromfile(str(out), np.uint8), cv2.IMREAD_UNCHANGED)
+        assert abs(img.shape[0] - 322) <= 8 and abs(img.shape[1] - 322) <= 8, img.shape
+
+        app.reset_rotation()
+        cx, cy = centre()
+        assert abs(cx - 400) < 2 and abs(cy - 400) < 2, (cx, cy)
+
+        root.update()
+        root.destroy()
+    print("rotation gui ok")
+
+
+def test_edit_piece_window():
+    import tkinter as tk
+    import doodle_gui
+    from doodle_gui import DoodleApp
+
+    def read(p):
+        return cv2.imdecode(np.fromfile(str(p), np.uint8), cv2.IMREAD_UNCHANGED)
+
+    bgr = fake_photo()[0]
+    with tempfile.TemporaryDirectory() as d:
+        src = Path(d) / "photo.png"
+        core.save_png(src, bgr)
+        root = tk.Tk()
+        root.geometry("1300x800")
+        app = DoodleApp(root)
+        root.update()
+        app.open_path(src)
+        app.white.set(150)
+        app.refresh()
+        app.add_piece(circle_loop())
+        app.add_piece([(620, 220), (980, 220), (980, 630), (620, 630)])   # the line
+        root.update()
+
+        main_out = Path(d) / "main.png"
+        assert app.save_piece(1, main_out)
+
+        editor = app.edit_piece(1)
+        root.update()
+        assert editor.is_piece and isinstance(editor.root, tk.Toplevel)
+        assert "piece 2" in editor.root.title()
+        assert editor.white.get() == 150 and editor.auto_crop.get(), "settings carried over"
+        assert "disabled" in editor.paper_check.state()
+        assert editor in doodle_gui._APPS and app in doodle_gui._APPS
+
+        # Saving from the editor gives the same piece as saving it from the page
+        ed_out = Path(d) / "edited.png"
+        assert editor.save_path(ed_out)
+        a, b = read(main_out), read(ed_out)
+        assert abs(a.shape[0] - b.shape[0]) <= 2 and abs(a.shape[1] - b.shape[1]) <= 2, (a.shape, b.shape)
+
+        # The editor has its own settings and can rotate the piece
+        editor.white.set(120)
+        assert app.white.get() == 150
+        editor.rotate_photo(1)
+        assert editor.save_path(ed_out)
+        c = read(ed_out)
+        assert abs(c.shape[0] - b.shape[1]) <= 2 and abs(c.shape[1] - b.shape[0]) <= 2, (b.shape, c.shape)
+        assert editor._piece_name(0) == "photo_piece2_piece1.png"
+
+        # Opening a photo in the editor turns it back into a normal window
+        editor.open_path(src)
+        assert not editor.is_piece and "disabled" not in editor.paper_check.state()
+
+        editor.root.destroy()
+        root.update()
+        assert editor not in doodle_gui._APPS and app in doodle_gui._APPS
+        root.destroy()
+        assert app not in doodle_gui._APPS
+    print("edit piece window ok")
 
 
 def test_preview_keeps_thin_lines():
@@ -230,5 +377,9 @@ if __name__ == "__main__":
     test_pieces()
     test_unicode_path()
     test_gui()
+    test_rotation_core()
+    test_piece_source()
+    test_rotation_gui()
+    test_edit_piece_window()
     test_preview_keeps_thin_lines()
     print("all tests passed")

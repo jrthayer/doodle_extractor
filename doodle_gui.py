@@ -9,6 +9,7 @@ Scroll to zoom, right-drag to pan.
 import math
 import sys
 import tkinter as tk
+from dataclasses import dataclass
 from pathlib import Path
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
@@ -29,17 +30,41 @@ SELECTED_COLOR = "#ff8c00"
 ROW_BG, ROW_SELECTED_BG = "#f4f4f4", "#ffe2bf"
 
 
+@dataclass
+class Piece:
+    poly: np.ndarray      # loop in ORIGINAL photo coords (float), so it follows photo rotation
+
+
+_APPS = []                # every open converter window (main + piece editors)
+
+
+def _dispatch_wheel(e):
+    """The mouse wheel is bound once for the whole program; route it to
+    whichever window's preview or list is under the pointer."""
+    for app in list(_APPS):
+        if app._wheel(e):
+            return
+
+
 class DoodleApp:
     def __init__(self, root):
-        self.root = root
+        self.root = root      # a tk.Tk (main window) or tk.Toplevel (piece editor)
         root.title("Doodle Converter")
         root.geometry("1350x800")
         root.minsize(900, 500)
 
         self.path = None          # current photo
+        self.base = None          # file-name stem for saving
+        self.is_piece = False     # True in a piece-editor window
         self.bgr = None           # full-res photo
-        self.flat = None          # full-res prepared image
+        self.flat0 = None         # full-res prepared image, unrotated
+        self.mask0 = None
+        self.flat = None          # ... after photo rotation (what everything else uses)
         self.mask = None
+        self.quarter = 0          # photo: 90-degree clockwise turns
+        self.R = np.eye(3)        # original photo coords -> rotated coords
+        self.Rinv = np.eye(3)
+        self._rotate_job = None
         self.alpha = None         # full-res result for the current settings
         self._crop = None         # auto-crop box for the current settings
 
@@ -56,7 +81,7 @@ class DoodleApp:
         self._resize_job = None
         self._bg_cache = {}
 
-        self.pieces = []          # lassoed regions: int32 (N, 2) arrays, photo coords
+        self.pieces = []          # list of Piece
         self.selected = None      # index into self.pieces
         self._lasso = None        # photo coords of the loop being drawn
         self._lasso_last = None   # last lasso point in canvas coords
@@ -71,6 +96,7 @@ class DoodleApp:
         self.detect_paper = tk.BooleanVar(value=True)
         self.bg_mode = tk.StringVar(value="Light")
         self.zoom_text = tk.StringVar(value="")
+        self.angle = tk.DoubleVar(value=0.0)        # photo straighten, degrees clockwise
 
         self._build_ui()
         root.bind("<Control-o>", lambda e: self.open_dialog())
@@ -82,7 +108,13 @@ class DoodleApp:
         root.bind("<Escape>", self._lasso_cancel)
         root.bind("<Delete>", lambda e: self.selected is not None
                   and self.delete_piece(self.selected))
-        root.bind_all("<MouseWheel>", self._wheel)
+        _APPS.append(self)
+        root.bind_all("<MouseWheel>", _dispatch_wheel)
+        root.bind("<Destroy>", self._on_destroy)
+
+    def _on_destroy(self, e):
+        if e.widget is self.root and self in _APPS:
+            _APPS.remove(self)
 
     # ------------------------------------------------------------------ UI
 
@@ -144,25 +176,32 @@ class DoodleApp:
                      lambda v: self.schedule_refresh())
 
         ttk.Separator(side).pack(fill="x", pady=10)
-        ttk.Checkbutton(side, text="Detect paper (ignore the desk)",
-                        variable=self.detect_paper, command=self.reprepare).pack(anchor="w")
+        self.paper_check = ttk.Checkbutton(side, text="Detect paper (ignore the desk)",
+                                           variable=self.detect_paper, command=self.reprepare)
+        self.paper_check.pack(anchor="w")
         ttk.Checkbutton(side, text="Crop to the drawing", variable=self.auto_crop,
                         command=self.schedule_refresh).pack(anchor="w", pady=(6, 0))
         self._slider(side, "Crop padding (px)", self.pad, 0, 200,
                      lambda v: self.schedule_refresh())
 
         ttk.Separator(side).pack(fill="x", pady=10)
+        ttk.Label(side, text="Rotate photo").pack(anchor="w")
+        row = ttk.Frame(side)
+        row.pack(anchor="w", pady=(4, 0))
+        ttk.Button(row, text="⟲ 90°", command=lambda: self.rotate_photo(-1)).pack(side="left")
+        ttk.Button(row, text="⟳ 90°", command=lambda: self.rotate_photo(1)).pack(side="left", padx=4)
+        ttk.Button(row, text="Reset", command=self.reset_rotation).pack(side="left")
+        self._slider(side, "Straighten (degrees clockwise)", self.angle, -45, 45,
+                     lambda v: self.schedule_rotate(), resolution=0.5)
+
+        ttk.Separator(side).pack(fill="x", pady=10)
         ttk.Button(side, text="Reset settings", command=self.reset).pack(anchor="w")
-        tip = ("Tips:\n"
-               "• Grid showing? Lower White.\n"
-               "• Lines thin or broken? Raise White.\n"
+        tip = ("• Grid showing? Lower White.\n"
+               "• Lines broken? Raise White.\n"
                "• Line middles gray? Raise Black.\n"
-               "• Scroll to zoom, right-drag to pan,\n"
-               "   Ctrl+0 to fit.\n\n"
-               "The saved PNG is always white;\n"
-               "set the color in Godot with\n"
-               "Self Modulate.")
-        ttk.Label(side, text=tip, foreground="#555", justify="left").pack(anchor="w", pady=(12, 0))
+               "• Scroll to zoom, right-drag to pan.\n"
+               "• Color it in Godot: Self Modulate.")
+        ttk.Label(side, text=tip, foreground="#555", justify="left").pack(anchor="w", pady=(10, 0))
 
     def _build_pieces_panel(self, parent):
         panel = ttk.Frame(parent, padding=(6, 6))
@@ -190,23 +229,28 @@ class DoodleApp:
             scrollregion=self.list_canvas.bbox("all")))
 
     def _wheel(self, e):
-        """Mouse wheel: zoom over the preview, scroll over the pieces list."""
-        w = self.root.winfo_containing(e.x_root, e.y_root)
+        """Mouse wheel: zoom over the preview, scroll over the pieces list.
+        Returns True if the pointer was over this window's widgets."""
+        try:
+            w = self.root.winfo_containing(e.x_root, e.y_root)
+        except (tk.TclError, KeyError):
+            return False
         if w is self.canvas:
             factor = ZOOM_STEP if e.delta > 0 else 1 / ZOOM_STEP
             self.zoom_at(e.x_root - self.canvas.winfo_rootx(),
                          e.y_root - self.canvas.winfo_rooty(), factor)
-            return
+            return True
         while w is not None:
             if w is self.list_canvas:
                 self.list_canvas.yview_scroll(int(-e.delta / 120), "units")
-                return
+                return True
             w = w.master
+        return False
 
-    def _slider(self, parent, label, var, lo, hi, command):
+    def _slider(self, parent, label, var, lo, hi, command, resolution=1):
         ttk.Label(parent, text=label).pack(anchor="w", pady=(8, 0))
         tk.Scale(parent, from_=lo, to=hi, orient="horizontal", variable=var,
-                 length=240, command=command).pack(anchor="w")
+                 length=240, command=command, resolution=resolution).pack(anchor="w")
 
     def _show_hint(self):
         self.canvas.delete("all")
@@ -244,13 +288,14 @@ class DoodleApp:
         self.min_speck.set(d.min_speck)
         self.pad.set(d.pad)
         self.auto_crop.set(d.auto_crop)
-        if not self.detect_paper.get():
+        if not self.detect_paper.get() and self.bgr is not None:
             self.detect_paper.set(True)
             self.reprepare()
         self.schedule_refresh()
 
     def pick_tint(self):
-        rgb, _ = colorchooser.askcolor(color=self._hex(self.tint), title="Preview line color")
+        rgb, _ = colorchooser.askcolor(color=self._hex(self.tint), title="Preview line color",
+                                       parent=self.root)
         if rgb:
             self.tint = tuple(int(c) for c in rgb)
             self.tint_swatch.configure(bg=self._hex(self.tint))
@@ -260,11 +305,12 @@ class DoodleApp:
 
     def open_dialog(self):
         if self.pieces and not messagebox.askyesno(
-                "Open another photo?", "This clears the current pieces. Continue?"):
+                "Open another photo?", "This clears the current pieces. Continue?",
+                parent=self.root):
             return
         initial = str(self.path.parent) if self.path else None
         p = filedialog.askopenfilename(title="Open drawing", filetypes=IMAGE_TYPES,
-                                       initialdir=initial)
+                                       initialdir=initial, parent=self.root)
         if p:
             self.open_path(p)
 
@@ -275,14 +321,38 @@ class DoodleApp:
             self.bgr = core.load_image(p)
         except Exception as e:
             self._idle()
-            messagebox.showerror("Couldn't open image", f"{p}\n\n{e}")
+            messagebox.showerror("Couldn't open image", f"{p}\n\n{e}", parent=self.root)
             return False
-        self.path = p
+        self.path, self.base, self.is_piece = p, p.stem, False
         self.root.title(f"Doodle Converter: {p.name}")
+        self.paper_check.state(["!disabled"])
         self.clear_pieces()
+        self.quarter = 0
+        self.angle.set(0.0)
         self.fit = True
         self.reprepare()
         return True
+
+    def load_prepared(self, flat, mask, path, base, settings, label):
+        """Load an already-prepared image (a piece from another window)."""
+        self.bgr = None                     # nothing to re-prepare from
+        self.path, self.base, self.is_piece = Path(path), base, True
+        self.root.title(f"Doodle Converter: {self.path.name}, {label}")
+        self.paper_check.state(["disabled"])
+        self.clear_pieces()
+        self.quarter = 0
+        self.angle.set(0.0)
+        self.fit = True
+        self.black.set(settings.black)
+        self.white.set(settings.white)
+        self.min_speck.set(settings.min_speck)
+        self.pad.set(settings.pad)
+        self.auto_crop.set(True)
+        self.flat0, self.mask0 = flat, mask
+        h, w = flat.shape
+        self.status.set(f"Editing {label} of {self.path.name} ({w}×{h}). "
+                        "Save PNG saves this piece.")
+        self.apply_rotation()
 
     def reprepare(self):
         """Run the slow part of the pipeline for the current photo."""
@@ -290,25 +360,60 @@ class DoodleApp:
             return
         self._busy("Processing…")
         try:
-            self.flat, self.mask = core.prepare(self.bgr, self.detect_paper.get())
+            self.flat0, self.mask0 = core.prepare(self.bgr, self.detect_paper.get())
         finally:
             self._idle()
-        h, w = self.flat.shape
-        paper = "page detected" if self.mask is not None else "no separate page found"
+        h, w = self.flat0.shape
+        paper = "page detected" if self.mask0 is not None else "no separate page found"
         self.status.set(f"{self.path.name}: {w}×{h}, {paper}. "
                         "Scroll to zoom, right-drag to pan.")
-        if self.fit:
+        self.apply_rotation()
+
+    # ------------------------------------------------------- photo rotation
+
+    def apply_rotation(self, refit=False):
+        """Rotate the prepared photo by the current rotation and redraw."""
+        self._rotate_job = None
+        if self.flat0 is None:
+            return
+        angle = float(self.angle.get())
+        self.flat, self.mask = core.rotate_prepared(self.flat0, self.mask0, self.quarter, angle)
+        self.R, _ = core.rotation_matrix(self.flat0.shape, self.quarter, angle)
+        self.Rinv = np.linalg.inv(self.R)
+        if self.fit or refit:
+            self.fit = True
             self._fit_view()
+        else:
+            self._clamp_view()
         self.refresh()
+
+    def rotate_photo(self, turns):
+        if self.flat0 is None:
+            return
+        self.quarter = (self.quarter + turns) % 4
+        self.apply_rotation(refit=True)
+
+    def reset_rotation(self):
+        if self.flat0 is None:
+            return
+        self.quarter = 0
+        self.angle.set(0.0)
+        self.apply_rotation(refit=True)
+
+    def schedule_rotate(self, *_):
+        if self._rotate_job:
+            self.root.after_cancel(self._rotate_job)
+        self._rotate_job = self.root.after(60, self.apply_rotation)
 
     def save_dialog(self):
         if self.flat is None:
-            messagebox.showinfo("Nothing to save", "Open a photo first.")
+            messagebox.showinfo("Nothing to save", "Open a photo first.", parent=self.root)
             return
+        name = f"{self.base}.png" if self.is_piece else f"{self.base}_ink.png"
         p = filedialog.asksaveasfilename(
             title="Save ink PNG", defaultextension=".png",
             filetypes=[("PNG image", "*.png")],
-            initialdir=str(self.path.parent), initialfile=self.path.stem + "_ink.png")
+            initialdir=str(self.path.parent), initialfile=name, parent=self.root)
         if p:
             self.save_path(p)
 
@@ -323,7 +428,7 @@ class DoodleApp:
             core.save_png(p, rgba)
         except Exception as e:
             self._idle()
-            messagebox.showerror("Couldn't save", f"{p}\n\n{e}")
+            messagebox.showerror("Couldn't save", f"{p}\n\n{e}", parent=self.root)
             return False
         self._idle()
         self.status.set(f"Saved {p} ({rgba.shape[1]}×{rgba.shape[0]})")
@@ -340,15 +445,33 @@ class DoodleApp:
     # --------------------------------------------------------------- pieces
 
     def _piece_name(self, i):
-        return f"{self.path.stem}_piece{i + 1}.png"
+        return f"{self.base}_piece{i + 1}.png"
+
+    def piece_poly(self, i):
+        """Piece i's loop in current (rotated) photo coords."""
+        return core.transform_points(self.R, self.pieces[i].poly).round().astype(np.int32)
 
     def add_piece(self, polygon):
-        self.pieces.append(np.asarray(polygon, np.int32).reshape(-1, 2))
+        """Add a loop given in current (rotated) photo coords."""
+        orig = core.transform_points(self.Rinv, polygon)
+        self.pieces.append(Piece(orig))
         self.selected = len(self.pieces) - 1
         self._rebuild_rows()
         self._update_rows()
         self.render()
         return self.selected
+
+    def edit_piece(self, i):
+        """Open piece i in its own converter window, with full-size preview,
+        rotation and its own settings. Returns the new window's app."""
+        flat, mask = core.piece_source(self.flat, self.mask, self.piece_poly(i))
+        win = tk.Toplevel(self.root)
+        editor = DoodleApp(win)
+        x, y = self.root.winfo_rootx(), self.root.winfo_rooty()
+        win.geometry(f"1350x800+{x + 40}+{max(y - 10, 0)}")
+        editor.load_prepared(flat, mask, self.path, self._piece_name(i)[:-4],
+                             self.settings(), f"piece {i + 1}")
+        return editor
 
     def delete_piece(self, i):
         del self.pieces[i]
@@ -366,27 +489,28 @@ class DoodleApp:
         self._rebuild_rows()
 
     def clear_dialog(self):
-        if self.pieces and messagebox.askyesno("Clear pieces", "Remove all pieces?"):
+        if self.pieces and messagebox.askyesno("Clear pieces", "Remove all pieces?",
+                                               parent=self.root):
             self.clear_pieces()
             self.render()
 
     def select_piece(self, i):
         self.selected = i
-        for j, (row, thumb, text) in enumerate(self._rows):
+        for j, widgets in enumerate(self._rows):
             bg = ROW_SELECTED_BG if j == i else ROW_BG
-            for widget in (row, thumb, text):
+            for widget in widgets:
                 widget.configure(bg=bg)
         self.render()
 
     def save_piece(self, i, p):
-        poly = self.pieces[i]
+        poly = self.piece_poly(i)
         return self._write(p, lambda: core.process_piece(self.flat, self.mask,
                                                          self.settings(), poly))
 
     def save_piece_dialog(self, i):
         p = filedialog.asksaveasfilename(
             title=f"Save piece {i + 1}", defaultextension=".png",
-            filetypes=[("PNG image", "*.png")],
+            filetypes=[("PNG image", "*.png")], parent=self.root,
             initialdir=str(self.path.parent), initialfile=self._piece_name(i))
         if p:
             self.save_piece(i, p)
@@ -406,17 +530,18 @@ class DoodleApp:
 
     def save_all_dialog(self):
         if not self.pieces:
-            messagebox.showinfo("No pieces", "Drag around a drawing on the preview first.")
+            messagebox.showinfo("No pieces", "Drag around a drawing on the preview first.",
+                                parent=self.root)
             return
         folder = filedialog.askdirectory(title="Save all pieces to…",
-                                         initialdir=str(self.path.parent))
+                                         initialdir=str(self.path.parent), parent=self.root)
         if not folder:
             return
         existing = [n for n in (self._piece_name(i) for i in range(len(self.pieces)))
                     if (Path(folder) / n).exists()]
         if existing and not messagebox.askyesno(
                 "Overwrite?", f"{len(existing)} file(s) already exist, e.g. {existing[0]}.\n"
-                              "Overwrite them?"):
+                              "Overwrite them?", parent=self.root):
             return
         self.save_all(folder)
 
@@ -436,13 +561,15 @@ class DoodleApp:
             info.pack(side="left", fill="both", expand=True, padx=(6, 0))
             text = tk.Label(info, text=f"Piece {i + 1}", bg=bg, anchor="w", justify="left")
             text.pack(anchor="w")
-            ttk.Button(info, text="Save…",
-                       command=lambda i=i: self.save_piece_dialog(i)).pack(anchor="w", pady=(4, 0))
-            ttk.Button(info, text="✕ Remove",
-                       command=lambda i=i: self.delete_piece(i)).pack(anchor="w", pady=(4, 0))
-            for widget in (row, thumb, text, info):
+            btns = tk.Frame(info, bg=bg)
+            btns.pack(anchor="w", pady=(2, 0))
+            for label, cmd in (("Edit…", self.edit_piece), ("Save…", self.save_piece_dialog),
+                               ("✕ Remove", self.delete_piece)):
+                ttk.Button(btns, text=label, width=11,
+                           command=lambda i=i, cmd=cmd: cmd(i)).pack(anchor="w", pady=(2, 0))
+            for widget in (row, thumb, text, info, btns):
                 widget.bind("<Button-1>", lambda e, i=i: self.select_piece(i))
-            self._rows.append((row, thumb, text))
+            self._rows.append((row, thumb, text, info, btns))
             self._thumbs.append(None)
 
     def _update_rows(self):
@@ -450,14 +577,14 @@ class DoodleApp:
         if self.alpha is None:
             return
         pad = self.pad.get()
-        for i, poly in enumerate(self.pieces[:len(self._rows)]):
-            cut = core.cut_piece(self.alpha, poly, pad)
+        for i in range(min(len(self.pieces), len(self._rows))):
+            cut = core.cut_piece(self.alpha, self.piece_poly(i), pad)
             h, w = cut.shape
             k = min(THUMB / w, THUMB / h)
             small = cv2.resize(cut, (max(int(w * k), 1), max(int(h * k), 1)),
                                interpolation=cv2.INTER_AREA if k < 1 else cv2.INTER_LINEAR)
             img = ImageTk.PhotoImage(Image.fromarray(self._composite(small)))
-            _, thumb, text = self._rows[i]
+            thumb, text = self._rows[i][1:3]
             thumb.configure(image=img, width=THUMB, height=THUMB)
             self._thumbs[i] = img
             text.configure(text=f"Piece {i + 1}\n{w}×{h} px")
@@ -673,8 +800,8 @@ class DoodleApp:
             bx, by = self.to_canvas(x + bw, y + bh)
             self.canvas.create_rectangle(ax, ay, bx, by, outline="#ff3b6b", dash=(5, 3), width=2)
 
-        for i, poly in enumerate(self.pieces):
-            pts = (poly - (self.vx, self.vy)) * s
+        for i in range(len(self.pieces)):
+            pts = (self.piece_poly(i) - (self.vx, self.vy)) * s
             sel = i == self.selected
             color = SELECTED_COLOR if sel else PIECE_COLOR
             self.canvas.create_polygon(pts.ravel().tolist(), outline=color, fill="",

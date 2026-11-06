@@ -21,6 +21,8 @@ def main():
     p.add_argument("--crop", action="store_true", help="crop to the ink")
     p.add_argument("--pad", type=int, default=8, help="padding around the crop")
     p.add_argument("--no-paper", action="store_true", help="skip paper detection")
+    p.add_argument("--rotate", type=float, default=0.0,
+                   help="rotate the photo by this many degrees clockwise (e.g. 90, -3.5)")
     p.add_argument("--debug", action="store_true", help="also write step images")
     a = p.parse_args()
 
@@ -34,6 +36,9 @@ def main():
     print("image loaded!")
 
     flat, mask = core.prepare(bgr, detect_paper=not a.no_paper)
+    if a.rotate:
+        quarter = round(a.rotate / 90)          # whole turns are lossless
+        flat, mask = core.rotate_prepared(flat, mask, quarter, a.rotate - 90 * quarter)
     s = core.Settings(black=a.black, white=a.white, min_speck=a.min_speck,
                       auto_crop=a.crop, pad=a.pad)
 

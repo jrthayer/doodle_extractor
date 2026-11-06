@@ -16,6 +16,9 @@ Run `dist\DoodleConverter.exe` (or `python doodle_gui.py`). You can also drag a 
    - The preview background and line color are for viewing only. The saved file is always white.
 3. **Save PNG…** (Ctrl+S): choose where to save the whole image.
 
+**Rotate photo:** ⟲ 90° / ⟳ 90° for sideways photos, and **Straighten** (−45° to +45°) for a slight
+tilt. Corners exposed by straightening are transparent. Pieces stay attached to their drawings.
+
 **Zoom:** scroll over the preview to zoom around the cursor, right-drag (or middle-drag) to pan.
 The toolbar has −, +, **Fit** and **100%**; Ctrl+0 fits, Ctrl+plus and Ctrl+minus zoom.
 
@@ -27,12 +30,15 @@ you can loop around the next one.
   current slider settings.
 - **Save…** on a row saves that piece; **Save all…** writes every piece to a folder as
   `<photo>_piece1.png`, `<photo>_piece2.png`, …
+- **Edit…** opens the piece in its own converter window: full-size preview, zoom, rotation and
+  its own Black/White settings (starting from the main window's). **Save PNG** there saves the
+  piece. You can open several at once.
 - Click a row to select it (highlighted orange on the preview). **Delete** removes the selected
   piece, and **Esc** cancels a loop you're drawing.
 
 ## Command line
 ```
-python main.py photo.jpg [-o out.png] [--black 80] [--white 160] [--min-speck 50] [--crop] [--pad 8] [--no-paper] [--debug]
+python main.py photo.jpg [-o out.png] [--black 80] [--white 160] [--min-speck 50] [--crop] [--pad 8] [--no-paper] [--rotate DEG] [--debug]
 ```
 `--debug` also writes the step images (`step0_mask.png`, `step2_flat.png`, `step3_alpha.png`).
 

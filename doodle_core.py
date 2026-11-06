@@ -8,6 +8,7 @@ The work is split into a slow part (`prepare`, done once per photo) and a
 fast part (`make_alpha` and friends, rerun whenever a setting changes).
 """
 
+import math
 from dataclasses import dataclass
 
 import cv2
@@ -90,6 +91,68 @@ def prepare(bgr, detect_paper=True):
     bg = cv2.GaussianBlur(gray, (0, 0), sigmaX=25)
     flat = cv2.divide(gray, bg, scale=255)
     return flat, mask
+
+
+# ---------------------------------------------------------------- rotation
+# Angles are in degrees CLOCKWISE (as seen on screen). `quarter` counts
+# 90-degree clockwise turns, which are done losslessly.
+
+_ROTATE_CODES = {1: cv2.ROTATE_90_CLOCKWISE, 2: cv2.ROTATE_180,
+                 3: cv2.ROTATE_90_COUNTERCLOCKWISE}
+
+
+def _fine_matrix(w, h, angle):
+    """Affine matrix rotating a w x h image by `angle` clockwise, with the
+    canvas grown so nothing is cut off. Returns (2x3 matrix, (new_w, new_h))."""
+    cx, cy = (w - 1) / 2, (h - 1) / 2
+    M = cv2.getRotationMatrix2D((cx, cy), -angle, 1.0)  # OpenCV: positive = counter-clockwise
+    cos, sin = abs(M[0, 0]), abs(M[0, 1])
+    nw = int(math.ceil(h * sin + w * cos - 1e-9))
+    nh = int(math.ceil(h * cos + w * sin - 1e-9))
+    M[0, 2] += (nw - 1) / 2 - cx
+    M[1, 2] += (nh - 1) / 2 - cy
+    return M, (nw, nh)
+
+
+def rotation_matrix(shape, quarter=0, angle=0.0):
+    """3x3 matrix mapping original photo (x, y) to rotated-photo (x, y),
+    matching `rotate_prepared`. Returns (matrix, (new_w, new_h))."""
+    h, w = shape
+    q = quarter % 4
+    if q == 0:
+        A, size = [[1, 0, 0], [0, 1, 0]], (w, h)
+    elif q == 1:   # clockwise: (x, y) -> (h-1-y, x)
+        A, size = [[0, -1, h - 1], [1, 0, 0]], (h, w)
+    elif q == 2:
+        A, size = [[-1, 0, w - 1], [0, -1, h - 1]], (w, h)
+    else:          # counter-clockwise: (x, y) -> (y, w-1-x)
+        A, size = [[0, 1, 0], [-1, 0, w - 1]], (h, w)
+    A = np.vstack([np.array(A, np.float64), [0, 0, 1]])
+    if angle:
+        F, size = _fine_matrix(size[0], size[1], angle)
+        A = np.vstack([F, [0, 0, 1]]) @ A
+    return A, size
+
+
+def rotate_prepared(flat, mask, quarter=0, angle=0.0):
+    """Rotate a prepared photo. New corners become paper (transparent)."""
+    q = quarter % 4
+    if q:
+        flat = cv2.rotate(flat, _ROTATE_CODES[q])
+        mask = None if mask is None else cv2.rotate(mask, _ROTATE_CODES[q])
+    if angle:
+        h, w = flat.shape
+        M, size = _fine_matrix(w, h, angle)
+        flat = cv2.warpAffine(flat, M, size, flags=cv2.INTER_LINEAR, borderValue=255)
+        if mask is not None:
+            mask = cv2.warpAffine(mask, M, size, flags=cv2.INTER_NEAREST, borderValue=0)
+    return flat, mask
+
+
+def transform_points(matrix, pts):
+    """Apply a 3x3 (or 2x3) affine matrix to an (N, 2) array of points."""
+    pts = np.asarray(pts, np.float64).reshape(-1, 2)
+    return pts @ matrix[:2, :2].T + matrix[:2, 2]
 
 
 # ------------------------------------------------ fast: per setting change
@@ -186,6 +249,28 @@ def cut_piece(alpha, polygon, pad):
 def process_piece(flat, mask, s: Settings, polygon):
     """Output image for one lassoed piece."""
     return to_rgba(cut_piece(finish_alpha(flat, mask, s), polygon, s.pad))
+
+
+def piece_source(flat, mask, polygon, margin=24):
+    """A prepared image containing only the inside of `polygon`, for editing
+    a piece on its own. Outside the loop becomes plain paper (255), with a
+    soft edge; `margin` px of paper is kept around the loop's bounds.
+    Returns (flat, mask) like `prepare`."""
+    H, W = flat.shape
+    pts = np.asarray(polygon, np.int32).reshape(-1, 2)
+    x0 = max(int(pts[:, 0].min()) - margin, 0)
+    y0 = max(int(pts[:, 1].min()) - margin, 0)
+    x1 = min(int(pts[:, 0].max()) + margin + 1, W)
+    y1 = min(int(pts[:, 1].max()) + margin + 1, H)
+    if x1 <= x0 or y1 <= y0:
+        return np.full((1, 1), 255, np.uint8), None
+
+    region = np.zeros((y1 - y0, x1 - x0), np.uint8)
+    cv2.fillPoly(region, [(pts - (x0, y0)).reshape(-1, 1, 2)], 255, lineType=cv2.LINE_AA)
+    ink = 255 - flat[y0:y1, x0:x1].astype(np.uint16)          # darkness
+    sub = (255 - ink * region // 255).astype(np.uint8)       # fade to paper outside
+    sub_mask = None if mask is None else mask[y0:y1, x0:x1].copy()
+    return sub, sub_mask
 
 
 def process(flat, mask, s: Settings):
