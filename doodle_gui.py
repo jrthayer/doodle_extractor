@@ -211,7 +211,7 @@ class DoodleApp:
         self._build_extract_section(self.extract_holder)
 
         ttk.Separator(side).pack(fill="x", pady=10)
-        self.crop_button = ttk.Button(side, text="Crop…", command=self.start_crop)
+        self.crop_button = ttk.Button(side, text="Crop", command=self.toggle_crop)
         self.crop_button.pack(anchor="w")
         self.crop_holder = ttk.Frame(side)   # keeps the crop section's place in the column
         self.crop_holder.pack(fill="x")
@@ -267,7 +267,7 @@ class DoodleApp:
         btns = ttk.Frame(sec)
         btns.grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 0))
         ttk.Button(btns, text="Save crop", command=self.save_crop).pack(side="left")
-        ttk.Button(btns, text="Cancel", command=self.cancel_crop).pack(side="left", padx=6)
+        ttk.Button(btns, text="Reset", command=self.reset_crop).pack(side="left", padx=6)
 
     def _build_pieces_panel(self, parent):
         panel = ttk.Frame(parent, padding=(6, 6))
@@ -505,7 +505,7 @@ class DoodleApp:
             messagebox.showinfo("Nothing to save", "Open a photo first.", parent=self.root)
             return False
         if self.cropping:
-            messagebox.showinfo("Finish cropping", "Click Save crop or Cancel first.",
+            messagebox.showinfo("Finish cropping", "Click Save crop (or Crop) first.",
                                 parent=self.root)
             return False
         self._flush()
@@ -941,13 +941,29 @@ class DoodleApp:
                                  else self._corners(full))
         self.tips.pack_forget()
         self.crop_section.pack(fill="x", pady=(6, 0))
-        self.crop_button.state(["disabled"])
+        self.crop_button.state(["pressed"])
         self._update_spin_limits()
         self._sync_spins()
         self.fit = True
-        self.status.set("Crop: drag the box's edges or type values, "
-                        "then Save crop (Enter) or Cancel (Esc).")
+        self.status.set("Crop: drag the box's edges or type values, then Save crop (Enter) "
+                        "or click Crop again. Reset puts the box back at the edges.")
         self.refresh()
+
+    def toggle_crop(self):
+        """The Crop button opens the crop section; clicking it again keeps the box."""
+        if self.cropping:
+            self.save_crop()
+        else:
+            self.start_crop()
+
+    def reset_crop(self):
+        """Put the crop box back at the image edges (and untick "to the drawing")."""
+        if not self.cropping:
+            return
+        self.set_crop_box(*self._full_rect())
+        self.crop_fit.set(False)
+        self._fit_backup = None
+        self.status.set("Crop box reset to the whole image.")
 
     def save_crop(self):
         if not self.cropping:
@@ -968,13 +984,6 @@ class DoodleApp:
         else:
             self.status.set(f"Cropped to {rect[2]}×{rect[3]} at ({rect[0]}, {rect[1]}).")
 
-    def cancel_crop(self):
-        if not self.cropping:
-            return
-        self._leave_crop_mode()
-        self.refresh()
-        self.status.set("Crop cancelled.")
-
     def _leave_crop_mode(self):
         if not self.cropping:
             return
@@ -983,7 +992,7 @@ class DoodleApp:
         self._fit_backup = None
         self.crop_section.pack_forget()
         self.crop_holder.configure(height=1)   # Tk keeps an emptied frame's size otherwise
-        self.crop_button.state(["!disabled"])
+        self.crop_button.state(["!pressed"])
         if not self.tips.winfo_manager():   # back under the specks slider
             self.tips.pack(anchor="w", pady=(10, 0), after=self.specks_scale)
         self.canvas.config(cursor=self._mode_cursor())
@@ -1152,8 +1161,8 @@ class DoodleApp:
             self._pan_end(e)
 
     def _on_escape(self, _e=None):
-        if self.cropping:
-            self.cancel_crop()
+        if self.cropping:            # like clicking Crop again: keeps the box
+            self.save_crop()
         elif self._lasso:
             self._lasso_cancel()
         elif self.select_mode.get():

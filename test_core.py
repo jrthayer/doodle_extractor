@@ -393,7 +393,7 @@ def test_crop_tool():
         app.start_crop()
         root.update()
         assert app.cropping and app.crop_section.winfo_manager()
-        assert not app.tips.winfo_manager() and "disabled" in app.crop_button.state()
+        assert not app.tips.winfo_manager() and "pressed" in app.crop_button.state()
         assert app.edit_rect() == (0, 0, W, H)
         assert [app.crop_vars[k].get() for k in "xywh"] == ["0", "0", "1200", "900"]
 
@@ -437,7 +437,7 @@ def test_crop_tool():
         app.save_crop()
         root.update()
         assert not app.cropping and not app.crop_section.winfo_manager()
-        assert app.tips.winfo_manager() and "disabled" not in app.crop_button.state()
+        assert app.tips.winfo_manager() and "pressed" not in app.crop_button.state()
         assert app.flat.shape == (360, 340)
         out = Path(d) / "cropped.png"
         assert app.save_path(out)
@@ -451,10 +451,23 @@ def test_crop_tool():
         assert app.save_piece(0, out)
         assert abs(read(out).shape[0] - 306) <= 6, read(out).shape
 
-        # Reopening shows the saved box; Cancel (Esc) changes nothing
+        # Reopening shows the saved box; Reset puts it back at the edges
+        app.crop_button.invoke()
+        assert app.cropping and app.edit_rect() == (230, 220, 340, 360)
+        assert app.flat.shape == (H, W)
+        app.crop_fit.set(True)
+        app.on_crop_fit()
+        app.reset_crop()
+        assert app.edit_rect() == (0, 0, W, H) and not app.crop_fit.get()
+        # Clicking Crop again collapses the section and keeps the changes
+        app.set_crop_box(100, 100, 500, 400)
+        app.crop_button.invoke()
+        root.update()
+        assert not app.cropping and not app.crop_section.winfo_manager()
+        assert app.flat.shape == (400, 500)
+        # Esc does the same
         app.start_crop()
-        assert app.edit_rect() == (230, 220, 340, 360) and app.flat.shape == (H, W)
-        app.set_crop_box(0, 0, 50, 50)
+        app.set_crop_box(230, 220, 340, 360)
         app._on_escape()
         assert not app.cropping and app.flat.shape == (360, 340)
 
@@ -573,8 +586,9 @@ def test_mouse_modes():
         app._left_move(Ev(*b))
         app._left_release(Ev(*b))
         assert abs(app.edit_rect()[2] - 1000) <= 3 and len(app.pieces) == 2
-        app.cancel_crop()
-        assert str(app.canvas.cget("cursor")) == "fleur"
+        app.reset_crop()
+        app.toggle_crop()                           # full box: no crop
+        assert app.crop_corners is None and str(app.canvas.cget("cursor")) == "fleur"
         root.destroy()
     print("mouse modes ok")
 

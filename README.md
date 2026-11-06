@@ -19,13 +19,16 @@ Run `dist\DoodleExtractor.exe` (or `python doodle_gui.py`). You can also drag a 
    Click **Extract ink** again to go back to the photo. Your slider values are kept for next time.
 3. **Save PNG…** (Ctrl+S): choose where to save the image (the cropped area, if you cropped).
 
-**Crop…** shows a crop box over the whole photo, starting at the edges:
+**Crop** opens the crop settings and shows a crop box over the photo, starting at the edges.
+The button stays pressed while the section is open:
 - Drag its edges or corners to resize it, or drag inside to move it. You can also type or step
   the **X / Y / Width / Height** values.
 - **Crop to the drawing** snaps the box tight to the ink and keeps following it as you
   change the sliders. Unticking it puts the box back where it was.
-- **Save crop** (Enter) applies it; **Cancel** (Esc) throws the changes away.
-- Clicking **Crop…** again later shows the box where you left it, so you can widen it back out.
+- **Save crop** (Enter) applies it. Clicking **Crop** again (or Esc) also closes the section
+  and keeps your changes.
+- **Reset** puts the box back at the image edges (no crop).
+- Opening **Crop** again later shows the box where you left it, so you can widen it back out.
 - The crop follows the photo when you rotate it. Piece editor windows start cropped to the drawing.
 
 **Rotate photo:** ⟲ 90° / ⟳ 90° for sideways photos, and **Straighten** (−45° to +45°) for a slight
