@@ -936,6 +936,123 @@ def test_hug_loop():
     print(f"hug loop ok ({ms:.0f} ms, smoothing on a photo-sized loop {ms_smooth:.0f} ms)")
 
 
+def test_pick_object():
+    import tkinter as tk
+    from doodle_gui import DoodleApp
+
+    area = lambda p: cv2.contourArea(p.reshape(-1, 1, 2).astype(np.float32))
+    covers = lambda mask, poly: (core.cut_piece(mask, poly, 0).astype(int).sum()
+                                 >= mask.astype(int).sum() * 0.99)
+
+    # Ink only (pencil-like): clicking the ring picks the ring, not the far line
+    ink = np.zeros((900, 1200), np.uint8)
+    cv2.circle(ink, (400, 400), 150, 255, 6)
+    cv2.line(ink, (800, 200), (1100, 700), 255, 6)
+    h = core.pick_object(ink, None, (550, 400), 50)
+    ring = np.zeros_like(ink)
+    cv2.circle(ring, (400, 400), 150, 255, 6)
+    line = ink & ~ring
+    assert covers(ring, h) and core.cut_piece(line, h, 0).max() == 0
+    assert core.pick_object(ink, None, (600, 820), 50) is None, "nothing near: no piece"
+    near = core.pick_object(ink, None, (553, 400), 50)            # a few px off the line
+    assert near is not None and covers(ring, near)
+
+    # Reach: two strokes 30 px apart
+    two = np.zeros((900, 1200), np.uint8)
+    cv2.line(two, (300, 300), (300, 600), 255, 6)
+    cv2.line(two, (330, 300), (330, 600), 255, 6)
+    left = np.zeros_like(two)
+    cv2.line(left, (300, 300), (300, 600), 255, 6)
+    h0 = core.pick_object(two, None, (300, 450), 0)
+    h100 = core.pick_object(two, None, (300, 450), 100)
+    assert core.cut_piece(two & ~left, h0, 0).max() == 0, "reach 0: one stroke"
+    assert covers(two, h100), "reach 100: both strokes"
+
+    # A solid W on red: click inside it, on its edge, or in the red next to it
+    wpic = np.zeros((600, 800, 3), np.uint8)
+    wpic[:] = (40, 40, 200)
+    wmask = np.zeros((600, 800), np.uint8)
+    cv2.polylines(wmask, [np.array([(200, 150), (290, 450), (400, 220), (510, 450), (600, 150)])],
+                  False, 255, 60)
+    wpic[wmask > 0] = (30, 30, 30)
+    faint = np.zeros((600, 800), np.uint8)       # ink detection sees only the edges
+    faint[cv2.morphologyEx(wmask, cv2.MORPH_GRADIENT, np.ones((5, 5), np.uint8)) > 0] = 120
+    inner = cv2.erode(wmask, np.ones((5, 5), np.uint8))
+    for seed in ((245, 300), (215, 300), (206, 300)):   # inside, edge, just outside
+        h = core.pick_object(faint, wpic, seed, 50)
+        assert h is not None, seed
+        poly = h.reshape(-1, 1, 2)
+        for valley in ((290, 250), (510, 250), (400, 420)):
+            assert cv2.pointPolygonTest(poly, valley, False) < 0, (seed, valley)
+        assert covers(inner, h), seed
+    assert core.pick_object(faint, wpic, (60, 560), 50) is None, "background: nothing"
+
+    # A hole: clicking inside an O picks the O
+    opic = np.zeros((600, 800, 3), np.uint8)
+    opic[:] = (40, 40, 200)
+    omask = np.zeros((600, 800), np.uint8)
+    cv2.circle(omask, (400, 300), 120, 255, 50)
+    opic[omask > 0] = (30, 30, 30)
+    h = core.pick_object(np.zeros((600, 800), np.uint8), opic, (400, 300), 50)
+    assert h is not None and covers(cv2.erode(omask, np.ones((5, 5), np.uint8)), h)
+
+    # GUI: the Pick object button, clicks, drags, Reach
+    class Ev:
+        def __init__(self, x, y):
+            self.x, self.y = int(round(x)), int(round(y))
+
+    with tempfile.TemporaryDirectory() as d:
+        src = Path(d) / "photo.png"
+        core.save_png(src, fake_photo()[0])
+        root = tk.Tk()
+        root.geometry("1300x800")
+        app = DoodleApp(root)
+        root.update()
+        app.open_path(src)
+        root.update()
+        app.set_select_mode(True)
+        app.pick_button.invoke()
+        assert app.pick_mode.get() and not app.select_mode.get()
+        assert "pressed" in app.pick_button.state() and str(app.canvas.cget("cursor")) == "tcross"
+        app.set_select_mode(True)                  # the modes switch each other off
+        assert not app.pick_mode.get()
+        app.set_pick_mode(True)
+
+        def click(x, y, dx=0, dy=0):
+            a = app.to_canvas(x, y)
+            app._left_press(Ev(*a))
+            app._left_move(Ev(a[0] + dx, a[1] + dy))
+            app._left_release(Ev(a[0] + dx, a[1] + dy))
+
+        click(550, 400)                            # on the ring
+        assert len(app.pieces) == 1 and app.pieces[0].seed is not None
+        assert "picked" in app.status.get()
+        ring_poly = app.piece_poly(0)
+        assert cv2.pointPolygonTest(ring_poly.reshape(-1, 1, 2), (400.0, 400.0), False) > 0
+        assert cv2.pointPolygonTest(ring_poly.reshape(-1, 1, 2), (800.0, 425.0), False) < 0
+        click(300, 400, 80, 0)                     # a drag pans, no piece
+        assert len(app.pieces) == 1
+        click(100, 870)                            # off the page: nothing to pick
+        assert len(app.pieces) == 1 and "Nothing to pick" in app.status.get()
+
+        # Reach re-picks the selected piece; selecting restores its values
+        app.reach.set(100)
+        app.repick()
+        assert app.pieces[0].reach == 100
+        app.smooth.set(80)
+        app.resmooth()
+        assert app.pieces[0].smooth == 80
+        app.reach.set(10)
+        app.smooth.set(10)
+        app.select_piece(0)
+        assert app.reach.get() == 100 and app.smooth.get() == 80
+
+        app._on_escape()
+        assert not app.pick_mode.get() and "pressed" not in app.pick_button.state()
+        root.destroy()
+    print("pick object ok")
+
+
 if __name__ == "__main__":
     test_pipeline()
     test_pieces()
@@ -950,5 +1067,6 @@ if __name__ == "__main__":
     test_extract_toggle()
     test_theme()
     test_hug_loop()
+    test_pick_object()
     test_preview_keeps_thin_lines()
     print("all tests passed")

@@ -45,6 +45,12 @@ Several drawings on one page? Click **Select piece** (above Save all), then **dr
 on the preview. When you let go the loop
 closes and the drawing becomes a **piece** in the panel on the right, while the full photo stays so
 you can loop around the next one.
+- **Pick object** (above Select piece): click a drawing instead of looping it. Click one of its
+  lines, inside a solid shape, or even inside a hole like the middle of an O. Clicking just next to
+  it works too. Dragging still moves the image. **Reach** sets how far it groups nearby strokes
+  (pencil drawings are made of separate lines); for solid shapes it only starts grouping above 50.
+  Moving Reach or Smoothing re-picks the selected piece. Drawings whose lines touch are picked
+  together; loop around one of them instead.
 - **Hug the drawing** (on by default, above Select piece) pulls the loop in to the drawing's
   outline when you let go. Gaps between strokes are bridged, so separate parts inside one loop stay
   together. It never goes outside your loop. Untick it to keep loops exactly as you draw them.

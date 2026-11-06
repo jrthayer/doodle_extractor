@@ -367,7 +367,131 @@ def _drop_clipped(blob, band):
     return np.where(keep[labels], 255, 0).astype(np.uint8)
 
 
-def hug_loop(alpha, polygon, ink=64, smooth=0, color=None):
+def _is_background(lab, region):
+    """Is `region` the color of the picture's background (e.g. the hole of an O,
+    or the paper between lines)? The background is learned from the border."""
+    h, w = region.shape
+    b = max(2, round(0.03 * max(h, w)))
+    strip = np.ones((h, w), bool)
+    strip[b:-b, b:-b] = False
+    samples = lab[strip].reshape(-1, 3).astype(np.float32)
+    k = min(3, len(samples))
+    _, labels, centers = cv2.kmeans(samples, k, None,
+                                    (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 0.5),
+                                    2, cv2.KMEANS_PP_CENTERS)
+    share = np.bincount(labels.ravel(), minlength=k) / len(samples)
+    mean = lab[region].mean(axis=0)
+    return any(np.linalg.norm(c - mean) < 20 for c in centers[share >= 0.15])
+
+
+def pick_object(alpha, color, seed, reach=50, smooth=0, ink=64):
+    """Find the object at `seed` (x, y) and return its outline as an int32
+    (N, 2) polygon, or None if there's nothing there.
+
+    A click on a line picks the strokes connected to it; `reach` (0-100) also
+    pulls in strokes across gaps (100 bridges about as much as hugging does).
+    A click inside a solid shape picks that shape (magic-wand style)."""
+    H, W = alpha.shape
+    gap = max(3, round(0.02 * max(H, W)))
+    s = min(1.0, 10 / gap)
+    sw, sh = max(1, round(W * s)), max(1, round(H * s))
+    gs = max(1, round(gap * s))
+    ink_mask = (alpha >= ink).astype(np.uint8) * 255
+    cand = cv2.resize(ink_mask, (sw, sh), interpolation=cv2.INTER_AREA) > 0
+    sx = min(max(int(seed[0] * s), 0), sw - 1)
+    sy = min(max(int(seed[1] * s), 0), sh - 1)
+
+    flood = None
+    if color is not None:
+        lab = cv2.cvtColor(cv2.resize(color, (sw, sh), interpolation=cv2.INTER_AREA)
+                           .astype(np.float32) / 255, cv2.COLOR_BGR2Lab)
+
+        def wand(x, y):
+            """Magic wand: the region of similar color around (x, y), and what it
+            is: "shape" (a distinct object), "hole" (enclosed background, like
+            the inside of an O) or "background"."""
+            fm = np.zeros((sh + 2, sw + 2), np.uint8)
+            cv2.floodFill(lab, fm, (x, y), 0, (12, 25, 25), (12, 25, 25),
+                          4 | cv2.FLOODFILL_FIXED_RANGE | cv2.FLOODFILL_MASK_ONLY | (255 << 8))
+            region = fm[1:-1, 1:-1] > 0
+            edge = region[0].any() or region[-1].any() or region[:, 0].any() or region[:, -1].any()
+            if region.mean() > 0.25 or edge:
+                return "background", region
+            return ("hole" if _is_background(lab, region) else "shape"), region
+
+        kind, region = wand(sx, sy)
+        if kind == "hole":   # clicked inside a hole: pick the shape around it
+            rim = cv2.dilate(region.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+            rim &= ~region
+            ys_, xs_ = np.nonzero(rim)
+            if len(xs_):
+                far = np.linalg.norm(lab[ys_, xs_] - lab[region].mean(axis=0), axis=1)
+                k = int(far.argmax())
+                sx, sy = int(xs_[k]), int(ys_[k])
+                kind, region = wand(sx, sy)
+        if kind == "shape":
+            cand |= region
+            flood = region
+
+    if not cand[sy, sx]:   # clicked next to the object: snap to the nearest part
+        r = max(2, round(0.015 * max(H, W) * s))
+        ys, xs = np.nonzero(cand[max(sy - r, 0):sy + r + 1, max(sx - r, 0):sx + r + 1])
+        if len(xs) == 0:
+            return None
+        k = int(np.argmin((xs + max(sx - r, 0) - sx) ** 2 + (ys + max(sy - r, 0) - sy) ** 2))
+        sx, sy = int(xs[k]) + max(sx - r, 0), int(ys[k]) + max(sy - r, 0)
+
+    # A solid shape (the magic wand got most of what was clicked) is already
+    # whole: Reach only bridges to other shapes above 50. Line drawings need
+    # their strokes bridged, so Reach applies from 0.
+    reach = max(0, min(reach, 100))
+    solid = False
+    if flood is not None:
+        _, lab0 = cv2.connectedComponents(cand.astype(np.uint8), connectivity=8)
+        part = lab0 == lab0[sy, sx]
+        solid = (flood & part).sum() >= 0.5 * part.sum()
+    g = round((max(0, reach - 50) / 50 if solid else reach / 100) * gs)
+
+    # Group: bridge gaps up to the reach, keep the part the click is in
+    p = g + 2 * gs + 8
+    grid = cv2.copyMakeBorder(cand.astype(np.uint8) * 255, p, p, p, p, cv2.BORDER_CONSTANT, value=0)
+    if g > 0:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * g + 1, 2 * g + 1))
+        grid = cv2.morphologyEx(grid, cv2.MORPH_CLOSE, k)
+    _, labels = cv2.connectedComponents(grid, connectivity=8)
+    comp = (labels == labels[sy + p, sx + p]).astype(np.uint8) * 255
+    if g > 0:   # the real pixels of that part (not the bridges)
+        comp &= cv2.copyMakeBorder(cand.astype(np.uint8) * 255, p, p, p, p,
+                                   cv2.BORDER_CONSTANT, value=0)
+
+    # Auto loop a little way around it, so the strip inside the loop is background
+    m = 2 * gs + 4
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * m + 1, 2 * m + 1))
+    around = cv2.dilate(cv2.morphologyEx(comp, cv2.MORPH_CLOSE, cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (2 * gs + 1, 2 * gs + 1))) if g == 0 else comp, k)
+    contours, _ = cv2.findContours(around, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    loop = max(contours, key=cv2.contourArea).reshape(-1, 2).astype(np.float64) - p
+    loop = (loop + 0.5) / s - 0.5
+    loop[:, 0] = loop[:, 0].clip(0, W - 1)
+    loop[:, 1] = loop[:, 1].clip(0, H - 1)
+    loop = loop.round().astype(np.int32)
+
+    # Only this part (with its inside) counts as drawing, so reach decides what's
+    # in, not the loop's margin
+    shape = cv2.morphologyEx(comp, cv2.MORPH_CLOSE, cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (2 * max(g, 1) + 1, 2 * max(g, 1) + 1)))
+    outer, _ = cv2.findContours(shape, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    shape = np.zeros_like(shape)
+    cv2.drawContours(shape, outer, -1, 255, cv2.FILLED)
+    only_small = cv2.dilate(shape, np.ones((5, 5), np.uint8))[p:-p, p:-p]
+    only = cv2.resize(only_small, (W, H), interpolation=cv2.INTER_NEAREST) > 0
+    hugged = hug_loop(alpha, loop, ink=ink, smooth=smooth, color=color, only=only)
+    return hugged if hugged is not None else loop
+
+
+def hug_loop(alpha, polygon, ink=64, smooth=0, color=None, only=None):
     """Shrink a hand-drawn loop to the outline of the drawing inside it.
 
     Nearby strokes are joined, holes are filled (the inside of the drawing is
@@ -406,6 +530,12 @@ def hug_loop(alpha, polygon, ink=64, smooth=0, color=None):
                                       borderType=cv2.BORDER_CONSTANT, borderValue=0) > 0)
     if sub_color is not None:   # solid / colored shapes the ink detection only sees faintly
         blob[_loop_object(sub_color, small_inside, band)] = 255
+    if only is not None:        # caller says which area may count as the drawing
+        sub_only = only[y0:y1, x0:x1].astype(np.uint8)
+        if s < 1:
+            sub_only = cv2.resize(sub_only, (blob.shape[1], blob.shape[0]),
+                                  interpolation=cv2.INTER_NEAREST)
+        blob[sub_only == 0] = 0
     if cv2.countNonZero(blob) < max(3, 20 * s * s):
         return None
     blob = _drop_clipped(blob, band)

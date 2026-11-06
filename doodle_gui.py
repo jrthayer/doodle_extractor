@@ -146,6 +146,8 @@ class Piece:
     loop: np.ndarray = None   # the loop as drawn (original coords), to re-hug it later
     hugged: bool = False      # poly was snapped to the drawing (smoothing applies)
     smooth: int = 0           # smoothing used for poly
+    seed: np.ndarray = None   # Pick object: the clicked point (original coords)
+    reach: int = 50           # Pick object: how far it grouped nearby strokes
 
 
 _APPS = []                # every open converter window (main + piece editors)
@@ -227,6 +229,10 @@ class DoodleApp:
         self.extract = tk.BooleanVar(value=False)      # show/save extracted ink instead of the photo
         self.hug = tk.BooleanVar(value=True)           # snap new loops to the drawing's outline
         self.smooth = tk.IntVar(value=30)              # how much hugged outlines are rounded
+        self.reach = tk.IntVar(value=50)               # Pick object: how much a click grabs
+        self.pick_mode = tk.BooleanVar(value=False)    # left-click picks objects
+        self._pick_press = None
+        self._repick_job = None
         self._smooth_job = None
         self.crop_vars = {k: tk.StringVar(value="0") for k in ("x", "y", "w", "h")}
         self.detect_paper = tk.BooleanVar(value=True)
@@ -400,8 +406,8 @@ class DoodleApp:
         panel = ttk.Frame(parent, padding=(6, 6))
         panel.pack(side="right", fill="y")
         ttk.Label(panel, text="Pieces", font=("Segoe UI", 11, "bold")).pack(anchor="w")
-        hint = ttk.Label(panel, text="Click Select piece, then drag\naround a drawing to cut "
-                                     "it out.\nEsc stops, Delete removes.", justify="left")
+        hint = ttk.Label(panel, text="Pick object: click a drawing.\nSelect piece: drag around "
+                                     "it.\nEsc stops, Delete removes.", justify="left")
         hint.pack(anchor="w")
         self._muted.append(hint)
 
@@ -413,8 +419,13 @@ class DoodleApp:
                                         command=lambda: self.set_select_mode(
                                             not self.select_mode.get()))
         self.select_button.pack(side="bottom", fill="x", pady=(6, 0))   # just above the row
+        self.pick_button = ttk.Button(panel, text="Pick object",
+                                      command=lambda: self.set_pick_mode(not self.pick_mode.get()))
+        self.pick_button.pack(side="bottom", fill="x", pady=(6, 0))
         smooth_box = ttk.Frame(panel)
         smooth_box.pack(side="bottom", fill="x")
+        self.reach_scale = self._slider(smooth_box, "Reach (Pick object)", self.reach, 0, 100,
+                                        self.schedule_repick, length=230)
         self.smooth_scale = self._slider(smooth_box, "Smoothing",
                                          self.smooth, 0, 100, self.schedule_resmooth, length=230)
         ttk.Checkbutton(panel, text="Hug the drawing",
@@ -832,6 +843,8 @@ class DoodleApp:
         self.selected = i
         if self.pieces[i].hugged:     # show its smoothing (setting the var doesn't re-smooth)
             self.smooth.set(self.pieces[i].smooth)
+        if self.pieces[i].seed is not None:
+            self.reach.set(self.pieces[i].reach)
         self._color_rows()
         self.render()
 
@@ -855,6 +868,9 @@ class DoodleApp:
         if i is None or i >= len(self.pieces) or self.alpha is None:
             return
         piece, v = self.pieces[i], self.smooth.get()
+        if piece.seed is not None:
+            self.repick(smooth_only=True)
+            return
         if not piece.hugged or piece.loop is None:
             return
         loop = core.transform_points(self.R, piece.loop).round().astype(np.int32)
@@ -865,6 +881,72 @@ class DoodleApp:
         self._update_rows()
         self.render()
         self.status.set(f"Piece {i + 1} smoothing: {v}")
+
+    # ---------------------------------------------------------- pick object
+
+    def _pick(self, seed, reach, smooth):
+        """Outline of the object at `seed` (working coords), or None."""
+        return core.pick_object(self._hug_alpha(), self.color, seed, reach, smooth)
+
+    def pick_at(self, x, y):
+        """Pick the object at (x, y) in working coords and add it as a piece."""
+        if self.alpha is None:
+            return None
+        self._flush()
+        reach, smooth = self.reach.get(), self.smooth.get()
+        poly = self._pick((x, y), reach, smooth)
+        if poly is None:
+            self.status.set("Nothing to pick there; click on a line or shape.")
+            return None
+        i = self.add_piece(poly, hugged=True, smooth=smooth)
+        piece = self.pieces[i]
+        piece.seed = core.transform_points(self.Rinv, np.array([[x, y]], float))[0]
+        piece.reach = reach
+        self.status.set(f"Added piece {i + 1} (picked by click). Reach adjusts how much it "
+                        "grabs.")
+        return i
+
+    def schedule_repick(self, *_):
+        if self._repick_job:
+            self.root.after_cancel(self._repick_job)
+        self._repick_job = self.root.after(80, self.repick)
+
+    def repick(self, smooth_only=False):
+        """Re-pick the selected picked piece with the current Reach / Smoothing."""
+        self._repick_job = None
+        i = self.selected
+        if i is None or i >= len(self.pieces) or self.alpha is None:
+            return
+        piece = self.pieces[i]
+        if piece.seed is None:
+            return
+        reach = piece.reach if smooth_only else self.reach.get()
+        smooth = self.smooth.get()
+        seed = core.transform_points(self.R, piece.seed[None])[0]
+        poly = self._pick(seed, reach, smooth)
+        if poly is None:
+            return
+        piece.poly = core.transform_points(self.Rinv, poly)
+        piece.reach, piece.smooth = reach, smooth
+        self._update_rows()
+        self.render()
+        self.status.set(f"Piece {i + 1}: reach {reach}, smoothing {smooth}")
+
+    def set_pick_mode(self, on):
+        """Pick object mode: a left click picks the object under it; dragging pans."""
+        if on and self.cropping:
+            on = False
+        if on and self.select_mode.get():
+            self.set_select_mode(False)
+        self.pick_mode.set(on)
+        self._pick_press = None
+        self.pick_button.state(["pressed"] if on else ["!pressed"])
+        self.pick_button.configure(text="Picking objects (Esc to stop)" if on else "Pick object")
+        if not self.cropping:
+            self.canvas.config(cursor=self._mode_cursor())
+        if self.flat is not None and not self.cropping:
+            self.status.set("Pick object: click a drawing's line or a solid shape. Esc stops."
+                            if on else "Drag to move, scroll to zoom.")
 
     def save_piece(self, i, p):
         if not self._ready():
@@ -1167,6 +1249,7 @@ class DoodleApp:
             return
         self._flush()
         self.set_select_mode(False)
+        self.set_pick_mode(False)
         self.cropping = True
         full = self._full_rect()
         if self.crop_fit_saved:
@@ -1357,6 +1440,8 @@ class DoodleApp:
     # --------------------------------------------------------- mouse modes
 
     def _mode_cursor(self):
+        if self.pick_mode.get():
+            return "tcross"
         return "crosshair" if self.select_mode.get() else "fleur"
 
     def set_select_mode(self, on):
@@ -1365,6 +1450,8 @@ class DoodleApp:
             on = False
         if not on:
             self._lasso_cancel()
+        elif self.pick_mode.get():
+            self.set_pick_mode(False)
         self.select_mode.set(on)
         self.select_button.state(["pressed"] if on else ["!pressed"])
         self.select_button.configure(text="Selecting pieces (Esc to stop)" if on
@@ -1381,6 +1468,8 @@ class DoodleApp:
         elif self.select_mode.get():
             self._lasso_start(e)
         else:
+            if self.pick_mode.get():
+                self._pick_press = (e.x, e.y)
             self._pan_start(e)
 
     def _left_move(self, e):
@@ -1397,7 +1486,10 @@ class DoodleApp:
         elif self._lasso:
             self._lasso_end(e)
         elif self._pan:
+            press, self._pick_press = self._pick_press, None
             self._pan_end(e)
+            if press and self.pick_mode.get() and math.hypot(e.x - press[0], e.y - press[1]) < 6:
+                self.pick_at(*self.to_image(e.x, e.y))
 
     def _on_escape(self, _e=None):
         if self.cropping:            # like clicking Crop again: keeps the box
@@ -1406,6 +1498,8 @@ class DoodleApp:
             self._lasso_cancel()
         elif self.select_mode.get():
             self.set_select_mode(False)
+        elif self.pick_mode.get():
+            self.set_pick_mode(False)
 
     def _on_return(self, _e=None):
         if self.cropping:
