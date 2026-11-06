@@ -125,6 +125,8 @@ def test_gui():
         app = DoodleApp(root)
         root.update()
         assert app.open_path(src)
+        assert app.white.get() == 255, "the app starts with White at 255"
+        app.white.set(160)             # these tests were written for White 160
         app.set_extract(True)          # these tests check extracted ink
         root.update()
         app.white.set(150)
@@ -255,6 +257,7 @@ def test_rotation_gui():
         app = DoodleApp(root)
         root.update()
         app.open_path(src)
+        app.white.set(160)             # these tests were written for White 160
         app.set_extract(True)          # these tests check extracted ink
         root.update()
 
@@ -307,6 +310,7 @@ def test_edit_piece_window():
         app = DoodleApp(root)
         root.update()
         app.open_path(src)
+        app.white.set(160)             # these tests were written for White 160
         app.set_extract(True)          # these tests check extracted ink
         app.white.set(150)
         app.refresh()
@@ -378,6 +382,7 @@ def test_crop_tool():
         app = DoodleApp(root)
         root.update()
         app.open_path(src)
+        app.white.set(160)             # these tests were written for White 160
         app.set_extract(True)          # these tests check extracted ink
         root.update()
         app.add_piece(circle_loop())          # made before cropping
@@ -534,6 +539,7 @@ def test_mouse_modes():
         app = DoodleApp(root)
         root.update()
         app.open_path(src)
+        app.white.set(160)             # these tests were written for White 160
         app.set_extract(True)          # these tests check extracted ink
         root.update()
 
@@ -706,6 +712,7 @@ def test_preview_keeps_thin_lines():
         app = DoodleApp(root)
         root.update()
         app.open_path(src)
+        app.white.set(160)             # these tests were written for White 160
         app.set_extract(True)          # these tests check extracted ink
         root.update()
         app.zoom_fit()
@@ -714,6 +721,219 @@ def test_preview_keeps_thin_lines():
         assert shown.max() > 60, f"line too faint in preview: {shown.max()}"
         root.destroy()
     print("thin lines ok")
+
+
+def test_theme():
+    import tkinter as tk
+    from tkinter import ttk
+    import doodle_gui
+    from doodle_gui import DoodleApp, set_theme, DARK, LIGHT
+
+    bgr = fake_photo()[0]
+    start = doodle_gui._THEME["dark"]
+    with tempfile.TemporaryDirectory() as d:
+        src = Path(d) / "photo.png"
+        core.save_png(src, bgr)
+        root = tk.Tk()
+        root.geometry("1300x800")
+        app = DoodleApp(root)
+        root.update()
+        app.open_path(src)
+        app.pieces.append(doodle_gui.Piece(np.array(circle_loop(), float)))
+        app._rebuild_rows()
+        editor = app.edit_piece(0)
+        root.update()
+
+        set_theme(True)          # every open window switches
+        root.update()
+        assert ttk.Style(root).theme_use() == "clam"
+        assert "light" in app.theme_tip and app.theme_button.cget("image")
+        for a in (app, editor):
+            assert a.dark.get() and a.canvas.cget("bg") == DARK["canvas"]
+            assert str(a._scales[0].cget("bg")) == DARK["bg"]
+            assert str(a.tips.cget("foreground")) == DARK["muted"]
+        assert app._rows[0][0].cget("bg") == DARK["row"]
+        app.select_piece(0)
+        assert app._rows[0][0].cget("bg") == DARK["row_sel"]
+        assert app._rows[0][2].cget("fg") == DARK["fg"]
+        app._rebuild_rows()       # new rows use the theme too
+        assert app._rows[0][0].cget("bg") == DARK["row_sel"]
+
+        # A window opened later starts dark
+        editor2 = app.edit_piece(0)
+        assert editor2.dark.get() and editor2.canvas.cget("bg") == DARK["canvas"]
+
+        set_theme(False)
+        root.update()
+        assert ttk.Style(root).theme_use() == "vista"
+        assert "dark" in app.theme_tip
+        app.theme_button.event_generate("<Button-1>")   # clicking the sun/moon toggles
+        assert doodle_gui._THEME["dark"] and editor.dark.get()
+        app.toggle_theme()
+        assert not doodle_gui._THEME["dark"]
+        assert not app.dark.get() and app.canvas.cget("bg") == LIGHT["canvas"]
+        assert app._rows[0][0].cget("bg") == LIGHT["row_sel"]
+        root.destroy()
+    doodle_gui._THEME["dark"] = start
+    print("theme ok")
+
+
+def test_hug_loop():
+    import time
+    import tkinter as tk
+    from doodle_gui import DoodleApp
+
+    alpha = np.zeros((900, 1200), np.uint8)
+    cv2.circle(alpha, (400, 400), 150, 255, 6)           # a ring drawing
+    loop = np.array(circle_loop(), np.int32)
+    t = time.perf_counter()
+    hug = core.hug_loop(alpha, loop)
+    ms = (time.perf_counter() - t) * 1000
+    assert hug is not None and hug.dtype == np.int32
+    area = lambda p: cv2.contourArea(p.reshape(-1, 1, 2).astype(np.float32))
+    assert area(hug) < area(loop) * 0.8, (area(hug), area(loop))
+    # Keeps all the ink, the inside of the ring, and stays inside the loop
+    full = core.cut_piece(alpha, loop, 0).astype(int).sum()
+    assert abs(core.cut_piece(alpha, hug, 0).astype(int).sum() - full) <= full * 0.01
+    lp = loop.reshape(-1, 1, 2).astype(np.float32)
+    assert all(cv2.pointPolygonTest(lp, (float(x), float(y)), True) >= -2 for x, y in hug)
+    assert cv2.pointPolygonTest(hug.reshape(-1, 1, 2), (400.0, 400.0), False) > 0, "holes filled"
+    # It hugs: every outline point is close to the ring
+    d = np.hypot(hug[:, 0] - 400, hug[:, 1] - 400)
+    assert d.max() < 165 and d.min() > 140, (d.min(), d.max())
+
+    # Two separate parts end up in one outline
+    two = np.zeros((900, 1200), np.uint8)
+    cv2.circle(two, (300, 400), 40, 255, 5)
+    cv2.rectangle(two, (600, 380), (680, 440), 255, 5)
+    box = np.array([(200, 300), (760, 300), (760, 520), (200, 520)], np.int32)
+    hug2 = core.hug_loop(two, box)
+    poly = hug2.reshape(-1, 1, 2)
+    for pt in ((300.0, 400.0), (640.0, 410.0)):
+        assert cv2.pointPolygonTest(poly, pt, False) > 0, pt
+    assert area(hug2) < area(box) * 0.7
+
+    assert core.hug_loop(np.zeros((900, 1200), np.uint8), loop) is None, "no ink: keep loop"
+
+    # Solid black bars on red: hug the looped bar, leave out the neighbour it clips
+    red = np.zeros((600, 800, 3), np.uint8)
+    red[:] = (40, 40, 200)
+    bar1, bar2 = np.zeros((600, 800), np.uint8), np.zeros((600, 800), np.uint8)
+    cv2.rectangle(bar1, (200, 150), (330, 420), 255, -1)
+    cv2.rectangle(bar2, (390, 150), (520, 420), 255, -1)
+    red[(bar1 | bar2) > 0] = (30, 30, 30)
+    faint = np.zeros((600, 800), np.uint8)              # what the ink detection sees: edges only
+    faint[cv2.morphologyEx(bar1 | bar2, cv2.MORPH_GRADIENT, np.ones((5, 5), np.uint8)) > 0] = 120
+    t_ = np.linspace(0, 2 * np.pi, 60, endpoint=False)
+    bar_loop = np.stack([265 + 170 * np.cos(t_), 285 + 190 * np.sin(t_)], 1).astype(np.int32)
+    h = core.hug_loop(faint, bar_loop, color=red)
+    assert core.cut_piece(bar2, h, 0).max() == 0, "the clipped neighbour is left out"
+    inner = cv2.erode(bar1, np.ones((5, 5), np.uint8))
+    assert core.cut_piece(inner, h, 0).astype(int).sum() >= inner.astype(int).sum() * 0.99
+    assert area(h) < cv2.countNonZero(bar1) * 1.6, (area(h), cv2.countNonZero(bar1))
+
+    # A solid W: its valleys stay open (traced, not bridged), at moderate smoothing too
+    wpic = np.zeros((600, 800, 3), np.uint8)
+    wpic[:] = (40, 40, 200)
+    wmask = np.zeros((600, 800), np.uint8)
+    cv2.polylines(wmask, [np.array([(200, 150), (290, 450), (400, 220), (510, 450), (600, 150)])],
+                  False, 255, 60)
+    wpic[wmask > 0] = (30, 30, 30)
+    w_loop = np.stack([400 + 300 * np.cos(t_), 300 + 230 * np.sin(t_)], 1).astype(np.int32)
+    for sm in (0, 30):
+        h = core.hug_loop(np.zeros((600, 800), np.uint8), w_loop, smooth=sm, color=wpic)
+        poly = h.reshape(-1, 1, 2)
+        for valley in ((290, 250), (510, 250), (400, 420)):   # red, between the arms
+            assert cv2.pointPolygonTest(poly, valley, False) < 0, (sm, valley)
+        inner = cv2.erode(wmask, np.ones((5, 5), np.uint8))
+        assert core.cut_piece(inner, h, 0).astype(int).sum() >= inner.astype(int).sum() * 0.99
+
+    # A colored object with no dark ink at all is found by its color
+    pic = np.zeros((600, 800, 3), np.uint8)
+    pic[:] = (40, 40, 200)
+    cv2.circle(pic, (400, 300), 100, (60, 190, 120), -1)
+    disc_loop = np.stack([400 + 190 * np.cos(t_), 300 + 190 * np.sin(t_)], 1).astype(np.int32)
+    none = np.zeros((600, 800), np.uint8)
+    assert core.hug_loop(none, disc_loop) is None
+    h = core.hug_loop(none, disc_loop, color=pic)
+    r_ = np.hypot(h[:, 0] - 400, h[:, 1] - 300)
+    assert 98 < r_.min() and r_.max() < 115, (r_.min(), r_.max())
+
+    # Smoothing: rounder, fewer corners, never loses ink, stays in the loop
+    jag = np.zeros((900, 1200), np.uint8)
+    for k in range(9):                               # a spiky "sun" of separate strokes
+        a = k * 2 * np.pi / 9
+        p0 = (int(400 + 60 * np.cos(a)), int(400 + 60 * np.sin(a)))
+        p1 = (int(400 + 150 * np.cos(a)), int(400 + 150 * np.sin(a)))
+        cv2.line(jag, p0, p1, 255, 6)
+    cv2.circle(jag, (400, 400), 40, 255, 6)
+    rough, smooth = core.hug_loop(jag, loop, smooth=0), core.hug_loop(jag, loop, smooth=100)
+    perim = lambda p: cv2.arcLength(p.reshape(-1, 1, 2), True)
+    assert len(smooth) < len(rough), (len(smooth), len(rough))
+    assert perim(smooth) / area(smooth) < perim(rough) / area(rough)
+    full = core.cut_piece(jag, loop, 0).astype(int).sum()
+    assert abs(core.cut_piece(jag, smooth, 0).astype(int).sum() - full) <= full * 0.01
+    assert all(cv2.pointPolygonTest(lp, (float(x), float(y)), True) >= -2 for x, y in smooth)
+    t = time.perf_counter()
+    core.hug_loop(np.pad(jag, ((0, 2220), (0, 2960))), loop * 3, smooth=100)  # photo-sized
+    ms_smooth = (time.perf_counter() - t) * 1000
+
+    # GUI: on by default, a loose loop hugs; off keeps the loop as drawn
+    class Ev:
+        def __init__(self, x, y):
+            self.x, self.y = int(round(x)), int(round(y))
+
+    with tempfile.TemporaryDirectory() as d:
+        src = Path(d) / "photo.png"
+        core.save_png(src, fake_photo()[0])
+        root = tk.Tk()
+        root.geometry("1300x800")
+        app = DoodleApp(root)
+        root.update()
+        app.open_path(src)
+        root.update()
+        assert app.hug.get() and app.white.get() == 255
+        # White 255 brings back the faint grid; hugging must not treat it as drawing
+        app.white.set(160)
+        app.refresh()
+        tight = core.hug_loop(app._hug_alpha(), loop, smooth=30)
+        app.white.set(255)
+        app.refresh()
+        capped = core.make_alpha(app.flat, app.mask, app.black.get(), 160)
+        assert np.array_equal(app._hug_alpha(), capped), "hugging caps White at 160"
+        assert np.array_equal(core.hug_loop(app._hug_alpha(), loop, smooth=30), tight)
+
+        def lasso(points):
+            pts = [app.to_canvas(x, y) for x, y in points]
+            app._lasso_start(Ev(*pts[0]))
+            for p in pts[1:]:
+                app._lasso_move(Ev(*p))
+            app._lasso_end(Ev(*pts[-1]))
+
+        lasso(circle_loop())
+        poly = app.piece_poly(0)
+        assert area(poly) < area(loop) * 0.8 and "hugging" in app.status.get()
+        # Smoothing re-hugs the selected piece live
+        assert app.pieces[0].hugged and app.pieces[0].smooth == app.smooth.get()
+        app.smooth.set(100)
+        app.resmooth()
+        assert app.pieces[0].smooth == 100
+        drawn_loop = core.transform_points(app.R, app.pieces[0].loop).round().astype(np.int32)
+        want = core.hug_loop(app.alpha, drawn_loop, smooth=100)
+        assert np.abs(app.piece_poly(0) - want).max() <= 1, "re-hugged from the drawn loop"
+        assert "smoothing" in app.status.get()
+
+        app.hug.set(False)
+        lasso(circle_loop())
+        assert area(app.piece_poly(1)) > area(loop) * 0.9
+        drawn = app.piece_poly(1).copy()
+        app.smooth.set(0)
+        app.resmooth()                          # not hugged: left alone
+        assert np.array_equal(app.piece_poly(1), drawn)
+        app.select_piece(0)                     # slider shows the piece's own value
+        assert app.smooth.get() == 100
+        root.destroy()
+    print(f"hug loop ok ({ms:.0f} ms, smoothing on a photo-sized loop {ms_smooth:.0f} ms)")
 
 
 if __name__ == "__main__":
@@ -728,5 +948,7 @@ if __name__ == "__main__":
     test_crop_tool()
     test_mouse_modes()
     test_extract_toggle()
+    test_theme()
+    test_hug_loop()
     test_preview_keeps_thin_lines()
     print("all tests passed")

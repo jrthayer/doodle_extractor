@@ -21,6 +21,8 @@ from PIL import Image, ImageTk
 import doodle_core as core
 
 APP_NAME = "Doodle Extractor"
+DEFAULT_WHITE = 255         # the app's White slider default (the CLI keeps 160)
+HUG_WHITE = 160             # hugging finds ink as if White were at most this
 IMAGE_TYPES = [("Images", "*.jpg *.jpeg *.png *.webp *.bmp *.tif *.tiff"),
                ("All files", "*.*")]
 BACKGROUNDS = ("Light", "Dark", "Checker")
@@ -30,12 +32,120 @@ ZOOM_STEP = 1.25
 PIECE_COLOR = "#1e90ff"
 SELECTED_COLOR = "#ff8c00"
 CROP_COLOR = "#ff3b6b"
-ROW_BG, ROW_SELECTED_BG = "#f4f4f4", "#ffe2bf"
+# Colors for the classic Tk widgets (ttk widgets get theirs from the ttk theme)
+LIGHT = dict(bg="SystemButtonFace", fg="SystemButtonText", muted="#555555", canvas="#808080",
+             row="#f4f4f4", row_sel="#ffe2bf", trough="SystemScrollbar",
+             active="SystemButtonFace", field="SystemWindow", field_fg="SystemWindowText")
+DARK = dict(bg="#202020", fg="#e8e8e8", muted="#a0a0a0", canvas="#2d2d2d",
+            row="#2b2b2b", row_sel="#5c4020", trough="#2d2d2d", active="#3e3e3e",
+            field="#2d2d2d", field_fg="#e8e8e8",
+            button="#333333", hover="#3e3e3e", pressed="#1f5f99", border="#4a4a4a",
+            disabled="#777777")
+_THEME = {"dark": None}       # None = not decided yet (follows Windows on first window)
+
+
+def system_prefers_dark():
+    """Windows' "app mode" setting (Settings > Personalization > Colors)."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows"
+                            r"\CurrentVersion\Themes\Personalize") as key:
+            return winreg.QueryValueEx(key, "AppsUseLightTheme")[0] == 0
+    except Exception:
+        return False
+
+
+def palette():
+    return DARK if _THEME["dark"] else LIGHT
+
+
+def _configure_style(root, dark):
+    """Set the ttk theme for the whole program (all windows share it)."""
+    style = ttk.Style(root)
+    if not dark:
+        style.theme_use("vista" if "vista" in style.theme_names() else "default")
+        list_bg, list_fg = LIGHT["field"], LIGHT["field_fg"]
+    else:
+        p = DARK
+        style.theme_use("clam")   # the native Windows theme can't be recolored
+        style.configure(".", background=p["bg"], foreground=p["fg"],
+                        fieldbackground=p["field"], bordercolor=p["border"],
+                        lightcolor=p["button"], darkcolor=p["button"],
+                        troughcolor=p["trough"], selectbackground=p["pressed"],
+                        selectforeground="#ffffff", insertcolor=p["fg"],
+                        arrowcolor=p["fg"], focuscolor=p["fg"])
+        style.map(".", background=[("disabled", p["bg"])],
+                  foreground=[("disabled", p["disabled"])])
+        for name in ("TButton", "TCombobox", "TSpinbox", "TScrollbar"):
+            style.configure(name, background=p["button"], lightcolor=p["button"],
+                            darkcolor=p["button"], bordercolor=p["border"],
+                            arrowcolor=p["fg"])
+        hover = [("pressed", p["pressed"]), ("active", p["hover"])]
+        style.map("TButton", background=hover, lightcolor=hover, darkcolor=hover)
+        style.map("TScrollbar", background=[("active", p["hover"])])
+        style.configure("TCheckbutton", indicatorbackground=p["field"],
+                        indicatorforeground=p["fg"])
+        style.map("TCheckbutton", background=[("active", p["bg"])],
+                  indicatorbackground=[("pressed", p["hover"]), ("disabled", p["bg"])])
+        style.map("TCombobox", fieldbackground=[("readonly", p["field"])],
+                  foreground=[("readonly", p["fg"])],
+                  selectbackground=[("readonly", p["field"])],
+                  selectforeground=[("readonly", p["fg"])],
+                  background=[("active", p["hover"])])
+        style.map("TSpinbox", background=[("active", p["hover"])])
+        style.configure("TLabelframe", background=p["bg"], bordercolor=p["border"])
+        style.configure("TLabelframe.Label", background=p["bg"], foreground=p["fg"])
+        style.configure("TSeparator", background=p["border"])
+        list_bg, list_fg = p["field"], p["fg"]
+    # Combobox drop-down lists made from now on (existing ones are fixed per window)
+    root.option_add("*TCombobox*Listbox.background", list_bg)
+    root.option_add("*TCombobox*Listbox.foreground", list_fg)
+
+
+def theme_icon(master, kind, rgb, size=20):
+    """A sun or moon icon as a Tk image, drawn smooth by supersampling."""
+    from PIL import ImageDraw
+    k = 4
+    n = size * k
+    img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    c = n / 2
+    if kind == "sun":
+        r = n * 0.2
+        d.ellipse((c - r, c - r, c + r, c + r), fill=rgb)
+        for i in range(8):
+            a = i * math.pi / 4
+            r0, r1 = n * 0.3, n * 0.45
+            d.line((c + r0 * math.cos(a), c + r0 * math.sin(a),
+                    c + r1 * math.cos(a), c + r1 * math.sin(a)), fill=rgb, width=int(n * 0.08))
+    else:   # crescent: a disc with a smaller offset disc cut out
+        r = n * 0.4
+        d.ellipse((c - r, c - r, c + r, c + r), fill=rgb)
+        cut = Image.new("L", (n, n), 0)
+        ImageDraw.Draw(cut).ellipse((c - r * 0.35, c - r * 1.25, c + r * 1.45, c + r * 0.55),
+                                    fill=255)
+        alpha = np.array(img.getchannel("A"))
+        alpha[np.array(cut) > 0] = 0
+        img.putalpha(Image.fromarray(alpha))
+    return ImageTk.PhotoImage(img.resize((size, size), Image.LANCZOS), master=master)
+
+
+def set_theme(dark):
+    """Switch every open window between the light and dark theme."""
+    _THEME["dark"] = bool(dark)
+    if _APPS:
+        _configure_style(_APPS[0].root, _THEME["dark"])
+    for app in list(_APPS):
+        app.dark.set(_THEME["dark"])
+        app._apply_theme()
 
 
 @dataclass
 class Piece:
-    poly: np.ndarray      # loop in ORIGINAL photo coords (float), so it follows photo rotation
+    poly: np.ndarray      # outline in ORIGINAL photo coords (float), so it follows photo rotation
+    loop: np.ndarray = None   # the loop as drawn (original coords), to re-hug it later
+    hugged: bool = False      # poly was snapped to the drawing (smoothing applies)
+    smooth: int = 0           # smoothing used for poly
 
 
 _APPS = []                # every open converter window (main + piece editors)
@@ -109,20 +219,30 @@ class DoodleApp:
         self._thumbs = []
 
         self.black = tk.IntVar(value=80)
-        self.white = tk.IntVar(value=160)
+        self.white = tk.IntVar(value=DEFAULT_WHITE)
         self.min_speck = tk.IntVar(value=0)
         self.pad = tk.IntVar(value=0)    # margin kept around drawings (no longer a slider)
         self.crop_fit = tk.BooleanVar(value=False)   # "Crop to the drawing" in crop mode
         self.select_mode = tk.BooleanVar(value=False)  # left-drag draws loops instead of panning
         self.extract = tk.BooleanVar(value=False)      # show/save extracted ink instead of the photo
+        self.hug = tk.BooleanVar(value=True)           # snap new loops to the drawing's outline
+        self.smooth = tk.IntVar(value=30)              # how much hugged outlines are rounded
+        self._smooth_job = None
         self.crop_vars = {k: tk.StringVar(value="0") for k in ("x", "y", "w", "h")}
         self.detect_paper = tk.BooleanVar(value=True)
         self.bg_mode = tk.StringVar(value="Light")
         self.zoom_text = tk.StringVar(value="")
         self.angle = tk.DoubleVar(value=0.0)        # photo straighten, degrees clockwise
+        if _THEME["dark"] is None:
+            _THEME["dark"] = system_prefers_dark()
+        self.dark = tk.BooleanVar(value=_THEME["dark"])
+        self._scales, self._muted = [], []   # classic Tk sliders / gray hint labels to recolor
+        _configure_style(root, _THEME["dark"])
 
         self._build_ui()
         self.set_extract(False, redraw=False)   # default: the photo as is
+        self._apply_theme()
+        root.bind("<Map>", lambda e: e.widget is root and self._title_bar(), add="+")
         root.bind("<Control-o>", lambda e: self.open_dialog())
         root.bind("<Control-s>", lambda e: self.save_dialog())
         root.bind("<Control-0>", lambda e: self.zoom_fit())
@@ -156,8 +276,8 @@ class DoodleApp:
         ttk.Button(bar, text="Save PNG…", command=self.save_dialog).pack(side="left", padx=(6, 18))
 
         ttk.Label(bar, text="Preview background:").pack(side="left")
-        bg = ttk.Combobox(bar, textvariable=self.bg_mode, values=BACKGROUNDS,
-                          state="readonly", width=8)
+        bg = self.bg_combo = ttk.Combobox(bar, textvariable=self.bg_mode, values=BACKGROUNDS,
+                                          state="readonly", width=8)
         bg.pack(side="left", padx=(4, 12))
         bg.bind("<<ComboboxSelected>>", lambda e: self.schedule_refresh())
 
@@ -175,6 +295,12 @@ class DoodleApp:
         ttk.Button(bar, text="Fit", width=4, command=self.zoom_fit).pack(side="left", padx=4)
         ttk.Button(bar, text="100%", width=5,
                    command=lambda: self.zoom_to(1.0)).pack(side="left")
+        # Theme switch: a moon in light mode (click for dark), a sun in dark mode
+        self.theme_button = ttk.Label(bar, cursor="hand2")   # just the icon, clickable
+        self.theme_button.pack(side="right", padx=(0, 4))
+        self.theme_button.bind("<Button-1>", lambda e: self.toggle_theme())
+        self.theme_button.bind("<Enter>", lambda e: self._hover_tip(self.theme_tip))
+        self.theme_button.bind("<Leave>", lambda e: self._hover_tip(None))
 
         self.status = tk.StringVar(value="Open a photo to start (Ctrl+O).")
         ttk.Label(self.root, textvariable=self.status, anchor="w",
@@ -240,7 +366,8 @@ class DoodleApp:
                "• Lines broken? Raise White.\n"
                "• Line middles gray? Raise Black.\n"
                "• Color it in Godot: Self Modulate.")
-        self.tips = ttk.Label(sec, text=tip, foreground="#555", justify="left")
+        self.tips = ttk.Label(sec, text=tip, justify="left")
+        self._muted.append(self.tips)
         self.tips.pack(anchor="w", pady=(10, 0))
         self.paper_check = ttk.Checkbutton(sec, text="Detect paper (ignore the desk)",
                                            variable=self.detect_paper, command=self.reprepare)
@@ -273,9 +400,10 @@ class DoodleApp:
         panel = ttk.Frame(parent, padding=(6, 6))
         panel.pack(side="right", fill="y")
         ttk.Label(panel, text="Pieces", font=("Segoe UI", 11, "bold")).pack(anchor="w")
-        ttk.Label(panel, text="Click Select piece, then drag\naround a drawing to cut it out.\n"
-                              "Esc stops, Delete removes.",
-                  foreground="#555", justify="left").pack(anchor="w")
+        hint = ttk.Label(panel, text="Click Select piece, then drag\naround a drawing to cut "
+                                     "it out.\nEsc stops, Delete removes.", justify="left")
+        hint.pack(anchor="w")
+        self._muted.append(hint)
 
         btns = ttk.Frame(panel)
         btns.pack(side="bottom", fill="x", pady=(6, 0))
@@ -285,6 +413,12 @@ class DoodleApp:
                                         command=lambda: self.set_select_mode(
                                             not self.select_mode.get()))
         self.select_button.pack(side="bottom", fill="x", pady=(6, 0))   # just above the row
+        smooth_box = ttk.Frame(panel)
+        smooth_box.pack(side="bottom", fill="x")
+        self.smooth_scale = self._slider(smooth_box, "Smoothing",
+                                         self.smooth, 0, 100, self.schedule_resmooth, length=230)
+        ttk.Checkbutton(panel, text="Hug the drawing",
+                        variable=self.hug).pack(side="bottom", anchor="w", pady=(6, 0))
 
         wrap = ttk.Frame(panel)
         wrap.pack(fill="both", expand=True, pady=(6, 0))
@@ -322,7 +456,70 @@ class DoodleApp:
         scale = tk.Scale(parent, from_=lo, to=hi, orient="horizontal", variable=var,
                          length=length, command=command, resolution=resolution)
         scale.pack(anchor="w")
+        self._scales.append(scale)
         return scale
+
+    def _apply_theme(self):
+        """Recolor this window's classic Tk widgets for the current theme."""
+        p = palette()
+        self.root.configure(bg=p["bg"])
+        self.canvas.configure(bg=p["canvas"])
+        self.list_canvas.configure(bg=p["bg"])
+        self.list_inner.configure(bg=p["bg"])
+        self.tint_swatch.configure(highlightbackground=p["bg"])
+        for scale in self._scales:
+            scale.configure(bg=p["bg"], fg=p["fg"], troughcolor=p["trough"],
+                            activebackground=p["active"], highlightbackground=p["bg"])
+        for label in self._muted:
+            label.configure(foreground=p["muted"])
+        self._color_rows()
+        dark = _THEME["dark"]
+        self._theme_icon = theme_icon(self.root, "sun" if dark else "moon",
+                                      (230, 230, 230) if dark else (60, 60, 60))
+        self.theme_button.configure(image=self._theme_icon)
+        self.theme_tip = "Switch to the light theme" if dark else "Switch to the dark theme"
+        try:   # a drop-down list that was already opened keeps its old colors otherwise
+            pop = self.root.tk.call("ttk::combobox::PopdownWindow", self.bg_combo)
+            self.root.tk.call(f"{pop}.f.l", "configure", "-background", p["field"],
+                              "-foreground", p["field_fg"])
+        except tk.TclError:
+            pass
+        self._title_bar()
+
+    def toggle_theme(self):
+        set_theme(not self.dark.get())
+
+    def _hover_tip(self, text):
+        """Show a button's hint in the status bar while the pointer is on it."""
+        if text:
+            self._status_before = self.status.get()
+            self.status.set(text)
+        elif getattr(self, "_status_before", None) is not None:
+            self.status.set(self._status_before)
+            self._status_before = None
+
+    def _title_bar(self):
+        """Dark or light window title bar (Windows 10 20H1+ / 11)."""
+        try:
+            import ctypes
+            hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
+            if not hwnd:
+                return
+            on = ctypes.c_int(1 if _THEME["dark"] else 0)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(on),
+                                                       ctypes.sizeof(on))
+            # SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED: redraw the frame now
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x27)
+        except Exception:
+            pass
+
+    def _color_rows(self):
+        p = palette()
+        for j, widgets in enumerate(self._rows):
+            bg = p["row_sel"] if j == self.selected else p["row"]
+            for widget in widgets:
+                widget.configure(bg=bg)
+            widgets[2].configure(fg=p["fg"])   # the "Piece N" label
 
     def _show_hint(self):
         self.canvas.delete("all")
@@ -355,7 +552,7 @@ class DoodleApp:
     def reset(self):
         d = core.Settings()
         self.black.set(d.black)
-        self.white.set(d.white)
+        self.white.set(DEFAULT_WHITE)
         self.min_speck.set(d.min_speck)
         if not self.detect_paper.get() and self.bgr is not None:
             self.detect_paper.set(True)
@@ -581,10 +778,12 @@ class DoodleApp:
         """Piece i's loop in current (rotated) photo coords."""
         return core.transform_points(self.R, self.pieces[i].poly).round().astype(np.int32)
 
-    def add_piece(self, polygon):
-        """Add a loop given in current (rotated) photo coords."""
+    def add_piece(self, polygon, loop=None, hugged=False, smooth=0):
+        """Add a loop given in current (rotated) photo coords. `loop` is the loop
+        as drawn when `polygon` is its hugged outline."""
         orig = core.transform_points(self.Rinv, polygon)
-        self.pieces.append(Piece(orig))
+        raw = None if loop is None else core.transform_points(self.Rinv, loop)
+        self.pieces.append(Piece(orig, raw, hugged, smooth))
         self.selected = len(self.pieces) - 1
         self._rebuild_rows()
         self._update_rows()
@@ -631,11 +830,41 @@ class DoodleApp:
 
     def select_piece(self, i):
         self.selected = i
-        for j, widgets in enumerate(self._rows):
-            bg = ROW_SELECTED_BG if j == i else ROW_BG
-            for widget in widgets:
-                widget.configure(bg=bg)
+        if self.pieces[i].hugged:     # show its smoothing (setting the var doesn't re-smooth)
+            self.smooth.set(self.pieces[i].smooth)
+        self._color_rows()
         self.render()
+
+    def _hug_alpha(self):
+        """The ink that hugging looks for. A high White (e.g. 255) brings back the
+        faint grid, which would count as drawing, so hugging caps White."""
+        s = self.settings()
+        if s.white <= HUG_WHITE:
+            return self.alpha
+        return core.make_alpha(self.flat, self.mask, s.black, max(HUG_WHITE, s.black + 1))
+
+    def schedule_resmooth(self, *_):
+        if self._smooth_job:
+            self.root.after_cancel(self._smooth_job)
+        self._smooth_job = self.root.after(80, self.resmooth)
+
+    def resmooth(self):
+        """Re-hug the selected piece with the current Smoothing value."""
+        self._smooth_job = None
+        i = self.selected
+        if i is None or i >= len(self.pieces) or self.alpha is None:
+            return
+        piece, v = self.pieces[i], self.smooth.get()
+        if not piece.hugged or piece.loop is None:
+            return
+        loop = core.transform_points(self.R, piece.loop).round().astype(np.int32)
+        hugged = core.hug_loop(self._hug_alpha(), loop, smooth=v, color=self.color)
+        if hugged is None:
+            return
+        piece.poly, piece.smooth = core.transform_points(self.Rinv, hugged), v
+        self._update_rows()
+        self.render()
+        self.status.set(f"Piece {i + 1} smoothing: {v}")
 
     def save_piece(self, i, p):
         if not self._ready():
@@ -687,14 +916,15 @@ class DoodleApp:
         if not hasattr(self, "_blank"):  # sizes empty thumbnails in pixels, not characters
             self._blank = tk.PhotoImage(width=THUMB, height=THUMB)
         for i in range(len(self.pieces)):
-            bg = ROW_SELECTED_BG if i == self.selected else ROW_BG
+            bg = palette()["row_sel"] if i == self.selected else palette()["row"]
             row = tk.Frame(self.list_inner, bg=bg, padx=4, pady=4)
             row.pack(fill="x", pady=2)
             thumb = tk.Label(row, bg=bg, image=self._blank, width=THUMB, height=THUMB)
             thumb.pack(side="left")
             info = tk.Frame(row, bg=bg)
             info.pack(side="left", fill="both", expand=True, padx=(6, 0))
-            text = tk.Label(info, text=f"Piece {i + 1}", bg=bg, anchor="w", justify="left")
+            text = tk.Label(info, text=f"Piece {i + 1}", bg=bg, fg=palette()["fg"],
+                            anchor="w", justify="left")
             text.pack(anchor="w")
             btns = tk.Frame(info, bg=bg)
             btns.pack(anchor="w", pady=(2, 0))
@@ -831,8 +1061,17 @@ class DoodleApp:
         h, w = self.flat.shape
         pts[:, 0] = pts[:, 0].clip(0, w - 1)
         pts[:, 1] = pts[:, 1].clip(0, h - 1)
-        i = self.add_piece(pts.round().astype(np.int32))
-        self.status.set(f"Added piece {i + 1}. Drag around another drawing, or save.")
+        pts = pts.round().astype(np.int32)
+        note, v = "", self.smooth.get()
+        hugged = core.hug_loop(self._hug_alpha(), pts, smooth=v, color=self.color) if self.hug.get() else None
+        if hugged is not None:
+            i = self.add_piece(hugged, loop=pts, hugged=True, smooth=v)
+            note = " (hugging the drawing)"
+        else:
+            if self.hug.get():
+                note = " (no ink found inside the loop, kept as drawn)"
+            i = self.add_piece(pts, loop=pts)
+        self.status.set(f"Added piece {i + 1}{note}. Drag around another drawing, or save.")
 
     def _lasso_cancel(self, _=None):
         self._lasso = None

@@ -34,6 +34,9 @@ The button stays pressed while the section is open:
 **Rotate photo:** ⟲ 90° / ⟳ 90° for sideways photos, and **Straighten** (−45° to +45°) for a slight
 tilt. Corners exposed by straightening are transparent. Pieces stay attached to their drawings.
 
+**Dark theme:** click the moon at the right of the toolbar (it becomes a sun; click that to go back). The app starts in whichever mode
+Windows apps use (Settings > Personalization > Colors), and every open window switches together.
+
 **Moving around:** drag the preview to move the image, scroll to zoom around the cursor.
 The toolbar has −, +, **Fit** and **100%**; Ctrl+0 fits, Ctrl+plus and Ctrl+minus zoom.
 
@@ -42,6 +45,14 @@ Several drawings on one page? Click **Select piece** (above Save all), then **dr
 on the preview. When you let go the loop
 closes and the drawing becomes a **piece** in the panel on the right, while the full photo stays so
 you can loop around the next one.
+- **Hug the drawing** (on by default, above Select piece) pulls the loop in to the drawing's
+  outline when you let go. Gaps between strokes are bridged, so separate parts inside one loop stay
+  together. It never goes outside your loop. Untick it to keep loops exactly as you draw them.
+  It finds pencil and pen lines as well as solid or colored shapes (anything that stands out from
+  the background along your loop), and leaves out slivers of neighbouring drawings your loop clips.
+- **Smoothing** (under Hug the drawing) rounds the hugged outline out; higher is rounder. It only
+  ever grows the outline, so no ink is cut off. Moving it also re-smooths the selected piece, so you
+  can loop first and tune after. Selecting a piece shows the smoothing it was made with.
 - Without Extract ink a piece is the photo inside its loop (transparent outside it). With it, the
   piece is the extracted ink, cropped tight to the drawing.
 - **Save…** on a row saves that piece; **Save all…** writes every piece to a folder as

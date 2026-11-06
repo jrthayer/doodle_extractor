@@ -318,6 +318,176 @@ def _loop_bounds(shape, polygon, margin):
     return (x0, y0, x1, y1), region
 
 
+def _loop_object(bgr, inside, band):
+    """Pixels inside the loop whose color differs clearly from the background,
+    learned from the strip just inside the loop (`band`)."""
+    lab = cv2.cvtColor(bgr.astype(np.float32) / 255, cv2.COLOR_BGR2Lab)
+    samples = lab[band].reshape(-1, 3).astype(np.float32)
+    if len(samples) < 8:
+        return np.zeros(inside.shape, bool)
+    k = min(4, len(samples))
+    _, labels, centers = cv2.kmeans(samples, k, None,
+                                    (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 0.5),
+                                    3, cv2.KMEANS_PP_CENTERS)
+    labels = labels.ravel()
+    share = np.bincount(labels, minlength=k) / len(samples)
+    # Background = the most common color along the loop, plus colors close to it
+    # (e.g. paper that's lit unevenly). Strokes the loop crosses stay "object".
+    bg = [int(share.argmax())]
+    grew = True
+    while grew:
+        grew = False
+        for c in range(k):
+            if c not in bg and share[c] >= 0.05 and min(
+                    np.linalg.norm(centers[c] - centers[b]) for b in bg) < 25:
+                bg.append(c)
+                grew = True
+    centers_bg = centers[bg]
+
+    def nearest(px):
+        return np.sqrt(((px[..., None, :] - centers_bg) ** 2).sum(-1)).min(-1)
+
+    bg_samples = samples[np.isin(labels, bg)]
+    thr = max(30.0, 2 * float(np.percentile(nearest(bg_samples), 90)))
+    return (nearest(lab) > thr) & inside
+
+
+def _drop_clipped(blob, band):
+    """Drop slivers of neighbouring drawings that the loop cuts through. Keeps
+    the biggest part, every part clear of the loop, and big parts touching it."""
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(blob, connectivity=8)
+    if n <= 2:
+        return blob
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    touching = np.zeros(n, bool)
+    touching[np.unique(labels[band & (labels > 0)])] = True
+    keep = np.zeros(n, bool)
+    keep[1:] = ~touching[1:] | (areas >= 0.25 * areas.max())
+    keep[1 + int(areas.argmax())] = True
+    return np.where(keep[labels], 255, 0).astype(np.uint8)
+
+
+def hug_loop(alpha, polygon, ink=64, smooth=0, color=None):
+    """Shrink a hand-drawn loop to the outline of the drawing inside it.
+
+    Nearby strokes are joined, holes are filled (the inside of the drawing is
+    kept) and separate parts end up in one outline. A small margin is added,
+    but the result never leaves the original loop. `smooth` (0-100) rounds the
+    outline out without cutting into the drawing. With `color` (the BGR image
+    in the same coords) solid and colored shapes count too, judged against the
+    background just inside the loop. Slivers of neighbours that the loop cuts
+    through are left out. Returns an int32 (N, 2) polygon in the same coords,
+    or None if there's nothing inside to hug."""
+    bounds = _loop_bounds(alpha.shape, polygon, 0)
+    if bounds is None:
+        return None
+    (x0, y0, x1, y1), region = bounds
+    inside = region >= 128
+    blob = ((alpha[y0:y1, x0:x1] >= ink) & inside).astype(np.uint8) * 255
+
+    H, W = alpha.shape
+    gap = max(3, round(0.02 * max(H, W)))     # bridge gaps this wide (px)
+    # Join and fill at a reduced scale (gap ~10 px there): wide gaps stay fast.
+    s = min(1.0, 10 / gap)
+    full_size = (blob.shape[1], blob.shape[0])
+    sub_color = None if color is None else color[y0:y1, x0:x1]
+    small_inside = inside
+    if s < 1:
+        small = (max(1, round(full_size[0] * s)), max(1, round(full_size[1] * s)))
+        blob = (cv2.resize(blob, small, interpolation=cv2.INTER_AREA) > 0).astype(np.uint8) * 255
+        small_inside = cv2.resize(inside.astype(np.uint8), small,
+                                  interpolation=cv2.INTER_NEAREST) > 0
+        if sub_color is not None:
+            sub_color = cv2.resize(sub_color, small, interpolation=cv2.INTER_AREA)
+        gap = max(1, round(gap * s))
+
+    # The strip just inside the loop: the loop goes AROUND the drawing, so it's background
+    band = small_inside & ~(cv2.erode(small_inside.astype(np.uint8), np.ones((7, 7), np.uint8),
+                                      borderType=cv2.BORDER_CONSTANT, borderValue=0) > 0)
+    if sub_color is not None:   # solid / colored shapes the ink detection only sees faintly
+        blob[_loop_object(sub_color, small_inside, band)] = 255
+    if cv2.countNonZero(blob) < max(3, 20 * s * s):
+        return None
+    blob = _drop_clipped(blob, band)
+
+    def fill_only(img):
+        contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        out = np.zeros_like(img)
+        cv2.drawContours(out, contours, -1, 255, cv2.FILLED)
+        return out, contours
+
+    def close_and_fill(img, g):
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * g + 1, 2 * g + 1))
+        img = cv2.morphologyEx(img, cv2.MORPH_CLOSE, k)
+        contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        out = np.zeros_like(img)
+        cv2.drawContours(out, contours, -1, 255, cv2.FILLED)
+        return out, contours
+
+    # Smoothing radius at the working scale (0-100 -> up to 4x the bridged gap)
+    r = round(max(0, min(smooth, 100)) / 100 * 4 * gap)
+    sigma = max(1.0, r / 2)
+    # Pad so closing / blurring can reach across the box edges too
+    p = max(4 * gap + 2, r + math.ceil(3 * sigma) + 2)
+    work = cv2.copyMakeBorder(blob, p, p, p, p, cv2.BORDER_CONSTANT, value=0)
+    # Specks would force wide bridging below: drop them first
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(work, connectivity=8)
+    if n > 2:
+        areas = stats[1:, cv2.CC_STAT_AREA]
+        keep = np.r_[False, areas >= 0.005 * areas.max()]
+        work = np.where(keep[labels], 255, 0).astype(np.uint8)
+
+    # Solid shapes (a filled letter, a painted object) are already one piece:
+    # trace them as they are, so notches like a W's valleys survive.
+    solid = False
+    for g in (0, 1, 2, 4, 6):
+        filled, contours = close_and_fill(work, g) if g else fill_only(work)
+        if len(contours) == 1:
+            solid = cv2.countNonZero(work & filled) >= 0.6 * cv2.countNonZero(filled)
+            break
+    if not solid:
+        # Line drawings: bridge the gaps between strokes so they become one shape
+        filled, contours = close_and_fill(work, gap)
+        g = gap
+        for _ in range(3):             # still in parts: join wider gaps
+            if len(contours) <= 1:
+                break
+            g *= 2
+            filled, contours = close_and_fill(filled, min(g, p // 2))
+    if len(contours) > 1:              # far apart: one outline around all of them
+        hull = cv2.convexHull(np.vstack(contours))
+        filled = np.zeros_like(filled)
+        cv2.fillPoly(filled, [hull], 255)
+    if r > 0:
+        # Round it out. Only ever grows (OR with the original), so no ink is lost:
+        # closing fills the bays, the blur softens the jitter. Solid shapes only
+        # get a lighter blur, so their real notches stay.
+        if solid:
+            soft = cv2.GaussianBlur(filled, (0, 0), sigma / 2)
+        else:
+            k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+            soft = cv2.GaussianBlur(cv2.morphologyEx(filled, cv2.MORPH_CLOSE, k), (0, 0), sigma)
+        filled = np.where((soft >= 128) | (filled > 0), 255, 0).astype(np.uint8)
+    filled = filled[p:-p, p:-p]
+    if s < 1:
+        filled = cv2.resize(filled, full_size, interpolation=cv2.INTER_LINEAR)
+        filled = (filled >= 128).astype(np.uint8) * 255
+
+    m = max(2, round(1 / s) + 2)       # a little room around the lines (covers the rescale)
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * m + 1, 2 * m + 1))
+    filled = cv2.dilate(filled, k)
+    filled[~inside] = 0                # never outside the user's loop
+
+    contours, _ = cv2.findContours(filled, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not contours:
+        return None
+    outline = contours[0] if len(contours) == 1 else cv2.convexHull(np.vstack(contours))
+    outline = cv2.approxPolyDP(outline, 1.5, True).reshape(-1, 2)
+    if len(outline) < 3:
+        return None
+    return (outline + (x0, y0)).astype(np.int32)
+
+
 # ------------------------------------------------- unfiltered (color) output
 
 def color_rgba(bgr, valid):
