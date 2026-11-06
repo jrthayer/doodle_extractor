@@ -11,10 +11,18 @@ Run `dist\DoodleConverter.exe` (or `python doodle_gui.py`). You can also drag a 
    - **Black**: ink this dark or darker is fully solid.
    - **White**: anything this light or lighter is transparent. Lower it if the grid shows.
    - **Remove specks**: erases dots smaller than N pixels.
-   - **Crop to the drawing** + **padding**: trims the empty page (shown as a dashed box).
    - **Detect paper**: ignores the desk around the page.
    - The preview background and line color are for viewing only. The saved file is always white.
-3. **Save PNG…** (Ctrl+S): choose where to save the whole image.
+3. **Save PNG…** (Ctrl+S): choose where to save the image (the cropped area, if you cropped).
+
+**Crop…** shows a crop box over the whole photo, starting at the edges:
+- Drag its edges or corners to resize it, or drag inside to move it. You can also type or step
+  the **X / Y / Width / Height** values.
+- **Crop to the drawing** snaps the box tight to the ink and keeps following it as you
+  change the sliders. Unticking it puts the box back where it was.
+- **Save crop** (Enter) applies it; **Cancel** (Esc) throws the changes away.
+- Clicking **Crop…** again later shows the box where you left it, so you can widen it back out.
+- The crop follows the photo when you rotate it. Piece editor windows start cropped to the drawing.
 
 **Rotate photo:** ⟲ 90° / ⟳ 90° for sideways photos, and **Straighten** (−45° to +45°) for a slight
 tilt. Corners exposed by straightening are transparent. Pieces stay attached to their drawings.
@@ -26,7 +34,7 @@ The toolbar has −, +, **Fit** and **100%**; Ctrl+0 fits, Ctrl+plus and Ctrl+mi
 Several drawings on one page? **Drag around a drawing** on the preview. When you let go the loop
 closes and the drawing becomes a **piece** in the panel on the right, while the full photo stays so
 you can loop around the next one.
-- Each piece is cropped to the ink inside its loop (plus the padding slider) and follows the
+- Each piece is cropped tight to the ink inside its loop and follows the
   current slider settings.
 - **Save…** on a row saves that piece; **Save all…** writes every piece to a folder as
   `<photo>_piece1.png`, `<photo>_piece2.png`, …

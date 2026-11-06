@@ -128,7 +128,6 @@ def test_gui():
         root.update()
         app.white.set(150)
         app.min_speck.set(50)
-        app.auto_crop.set(True)
         app.on_white()
         app.refresh()
         for mode in ("Dark", "Checker", "Light"):
@@ -152,7 +151,10 @@ def test_gui():
         out = Path(d) / "photo_ink.png"
         assert app.save_path(out)
         saved = cv2.imdecode(np.fromfile(str(out), np.uint8), cv2.IMREAD_UNCHANGED)
-        assert saved.shape[2] == 4 and saved.shape[:2] != bgr.shape[:2], "cropped output"
+        assert saved.shape == (*bgr.shape[:2], 4), "no crop: whole image"
+        # ...and the same through the pipeline the CLI uses
+        flat, mask = core.prepare(bgr)
+        assert np.array_equal(saved, core.process(flat, mask, app.settings()))
 
         # Lasso two pieces with simulated mouse drags (image -> canvas coords)
         class Ev:
@@ -176,14 +178,14 @@ def test_gui():
         p1 = Path(d) / "one.png"
         assert app.save_piece(0, p1)
         one = cv2.imdecode(np.fromfile(str(p1), np.uint8), cv2.IMREAD_UNCHANGED)
-        assert abs(one.shape[1] - 322) <= 8, one.shape
+        assert abs(one.shape[1] - 306) <= 8, one.shape          # circle, no margin
 
         out_dir = Path(d) / "pieces"
         out_dir.mkdir()
         written = app.save_all(out_dir)
         assert [p.name for p in written] == ["photo_piece1.png", "photo_piece2.png"]
         line = cv2.imdecode(np.fromfile(str(written[1]), np.uint8), cv2.IMREAD_UNCHANGED)
-        assert abs(line.shape[1] - (300 + 8 + 16)) <= 10, line.shape   # line is 300px wide
+        assert abs(line.shape[1] - (300 + 8)) <= 10, line.shape   # line: 300px wide, 8px thick
 
         # Zoomed in, a loop still lands in the right place on the photo
         app.zoom_to(2.0, 0, 0)
@@ -268,14 +270,14 @@ def test_rotation_gui():
         out = Path(d) / "circle.png"
         assert app.save_piece(0, out)
         img = cv2.imdecode(np.fromfile(str(out), np.uint8), cv2.IMREAD_UNCHANGED)
-        assert abs(img.shape[0] - 322) <= 6 and abs(img.shape[1] - 322) <= 6, img.shape
+        assert abs(img.shape[0] - 306) <= 6 and abs(img.shape[1] - 306) <= 6, img.shape
 
         # Straighten slider: still the same circle
         app.angle.set(20)
         app.apply_rotation()
         assert app.save_piece(0, out)
         img = cv2.imdecode(np.fromfile(str(out), np.uint8), cv2.IMREAD_UNCHANGED)
-        assert abs(img.shape[0] - 322) <= 8 and abs(img.shape[1] - 322) <= 8, img.shape
+        assert abs(img.shape[0] - 306) <= 8 and abs(img.shape[1] - 306) <= 8, img.shape
 
         app.reset_rotation()
         cx, cy = centre()
@@ -316,7 +318,8 @@ def test_edit_piece_window():
         root.update()
         assert editor.is_piece and isinstance(editor.root, tk.Toplevel)
         assert "piece 2" in editor.root.title()
-        assert editor.white.get() == 150 and editor.auto_crop.get(), "settings carried over"
+        assert editor.white.get() == 150, "settings carried over"
+        assert editor.crop_fit_saved, "editor starts cropped to the drawing"
         assert "disabled" in editor.paper_check.state()
         assert editor in doodle_gui._APPS and app in doodle_gui._APPS
 
@@ -345,6 +348,156 @@ def test_edit_piece_window():
         root.destroy()
         assert app not in doodle_gui._APPS
     print("edit piece window ok")
+
+
+def test_crop_tool():
+    import tkinter as tk
+    import doodle_gui
+    from doodle_gui import DoodleApp
+
+    def read(p):
+        return cv2.imdecode(np.fromfile(str(p), np.uint8), cv2.IMREAD_UNCHANGED)
+
+    class Ev:
+        def __init__(self, x, y):
+            self.x, self.y = int(round(x)), int(round(y))
+
+    def near(a, b, tol=3):
+        return all(abs(p - q) <= tol for p, q in zip(a, b))
+
+    bgr = fake_photo()[0]                     # 1200 x 900, circle (400, 400) r=150
+    W, H = 1200, 900
+    with tempfile.TemporaryDirectory() as d:
+        src = Path(d) / "photo.png"
+        core.save_png(src, bgr)
+        root = tk.Tk()
+        root.geometry("1300x800")
+        app = DoodleApp(root)
+        root.update()
+        app.open_path(src)
+        root.update()
+        app.add_piece(circle_loop())          # made before cropping
+
+        def drag(p0, p1):
+            a, b = app.to_canvas(*p0), app.to_canvas(*p1)
+            app._crop_press(Ev(*a))
+            app._crop_move(Ev(*b))
+            app._crop_release(Ev(*b))
+
+        # Hidden until Crop is clicked; box starts at the image edges
+        assert not app.cropping and not app.crop_section.winfo_manager()
+        app.start_crop()
+        root.update()
+        assert app.cropping and app.crop_section.winfo_manager()
+        assert not app.tips.winfo_manager() and "disabled" in app.crop_button.state()
+        assert app.edit_rect() == (0, 0, W, H)
+        assert [app.crop_vars[k].get() for k in "xywh"] == ["0", "0", "1200", "900"]
+
+        # Typed values are clamped to the image
+        app.crop_vars["x"].set("100")
+        app.crop_vars["w"].set("5000")
+        app._crop_from_spins()
+        assert app.edit_rect() == (100, 0, 1100, 900)
+
+        # Drag the right edge, then the top-left corner, then move the box
+        drag((1200, 450), (1000, 450))
+        assert near(app.edit_rect(), (100, 0, 900, 900)), app.edit_rect()
+        drag((100, 0), (150, 50))
+        assert near(app.edit_rect(), (150, 50, 850, 850)), app.edit_rect()
+        x, y, w, h = app.edit_rect()
+        drag((x + w / 2, y + h / 2), (x + w / 2 - 30, y + h / 2 - 20))
+        assert near(app.edit_rect(), (x - 30, y - 20, w, h)), app.edit_rect()
+        assert app.crop_vars["x"].get() == str(app.edit_rect()[0]), "spinboxes follow drags"
+        drag((x + w / 2, y + h / 2), (x + w / 2, y + h / 2 + 500))   # can't leave the image
+        assert app.edit_rect()[1] + app.edit_rect()[3] == H
+        assert app._crop_hit(*app.to_canvas(1150, 20)) is None, "outside the box"
+
+        # "Crop to the drawing" snaps to the ink box; unticking restores the box
+        before = app.edit_rect()
+        app.crop_fit.set(True)
+        app.on_crop_fit()
+        assert app.edit_rect() == core.crop_box(app.alpha_full, app.pad.get())
+        app.pad.set(30)
+        app.refresh()
+        assert app.edit_rect() == core.crop_box(app.alpha_full, 30), "box tracks the ink"
+        app.pad.set(0)
+        app.crop_fit.set(False)
+        app.on_crop_fit()
+        assert app.edit_rect() == before
+        app.crop_fit.set(True)
+        app.on_crop_fit()
+        app.set_crop_box(230, 220, 340, 360)  # hand edit turns "to the drawing" off
+        assert not app.crop_fit.get()
+
+        # Save crop: the working image is the cropped area
+        app.save_crop()
+        root.update()
+        assert not app.cropping and not app.crop_section.winfo_manager()
+        assert app.tips.winfo_manager() and "disabled" not in app.crop_button.state()
+        assert app.flat.shape == (360, 340)
+        out = Path(d) / "cropped.png"
+        assert app.save_path(out)
+        saved = read(out)
+        assert saved.shape == (360, 340, 4)
+        assert np.array_equal(saved[:, :, 3], app.alpha_full[220:580, 230:570])
+
+        # A piece made before the crop still points at the same drawing
+        p = app.piece_poly(0)
+        assert abs(p[:, 0].mean() - (400 - 230)) < 2 and abs(p[:, 1].mean() - (400 - 220)) < 2
+        assert app.save_piece(0, out)
+        assert abs(read(out).shape[0] - 306) <= 6, read(out).shape
+
+        # Reopening shows the saved box; Cancel (Esc) changes nothing
+        app.start_crop()
+        assert app.edit_rect() == (230, 220, 340, 360) and app.flat.shape == (H, W)
+        app.set_crop_box(0, 0, 50, 50)
+        app._on_escape()
+        assert not app.cropping and app.flat.shape == (360, 340)
+
+        # Saving is refused while cropping
+        shown = []
+        orig_info = doodle_gui.messagebox.showinfo
+        doodle_gui.messagebox.showinfo = lambda *a, **k: shown.append(a)
+        try:
+            app.start_crop()
+            assert not app.save_path(out) and shown
+            app._on_return()                  # Enter saves the crop
+            assert not app.cropping
+        finally:
+            doodle_gui.messagebox.showinfo = orig_info
+
+        # Rotation: the crop follows the content, exactly for 90-degree turns
+        app.rotate_photo(1)
+        assert app.flat.shape == (340, 360)
+        assert app.save_path(out)
+        assert np.array_equal(read(out), cv2.rotate(saved, cv2.ROTATE_90_CLOCKWISE))
+        app.rotate_photo(-1)
+        assert app.work_rect == (230, 220, 340, 360)
+        app.angle.set(7)
+        app.apply_rotation()
+        app.angle.set(0)
+        app.apply_rotation()
+        assert app.work_rect == (230, 220, 340, 360), "straighten there and back: no growth"
+
+        # A saved "to the drawing" crop stays live
+        app.start_crop()
+        app.crop_fit.set(True)
+        app.on_crop_fit()
+        app.save_crop()
+        assert app.crop_fit_saved and app.work_rect == core.crop_box(app.alpha_full, 0)
+        app.pad.set(40)
+        app.refresh()
+        assert app.work_rect == core.crop_box(app.alpha_full, 40)
+
+        # Saving the full box means no crop
+        app.start_crop()
+        app.crop_fit.set(False)
+        app.on_crop_fit()                     # restores the remembered box: whole image
+        app.save_crop()
+        assert app.crop_corners is None and not app.crop_fit_saved
+        assert app.flat.shape == (H, W)
+        root.destroy()
+    print("crop tool ok")
 
 
 def test_preview_keeps_thin_lines():
@@ -381,5 +534,6 @@ if __name__ == "__main__":
     test_piece_source()
     test_rotation_gui()
     test_edit_piece_window()
+    test_crop_tool()
     test_preview_keeps_thin_lines()
     print("all tests passed")

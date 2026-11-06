@@ -27,6 +27,7 @@ MAX_ZOOM = 8.0                # 800%: screen px per photo px
 ZOOM_STEP = 1.25
 PIECE_COLOR = "#1e90ff"
 SELECTED_COLOR = "#ff8c00"
+CROP_COLOR = "#ff3b6b"
 ROW_BG, ROW_SELECTED_BG = "#f4f4f4", "#ffe2bf"
 
 
@@ -59,14 +60,27 @@ class DoodleApp:
         self.bgr = None           # full-res photo
         self.flat0 = None         # full-res prepared image, unrotated
         self.mask0 = None
-        self.flat = None          # ... after photo rotation (what everything else uses)
-        self.mask = None
+        self.rflat = None         # ... after photo rotation (full size)
+        self.rmask = None
+        self.alpha_full = None    # result for the current settings, full rotated size
         self.quarter = 0          # photo: 90-degree clockwise turns
-        self.R = np.eye(3)        # original photo coords -> rotated coords
-        self.Rinv = np.eye(3)
+        self.Rrot = np.eye(3)     # original photo coords -> rotated coords
         self._rotate_job = None
-        self.alpha = None         # full-res result for the current settings
-        self._crop = None         # auto-crop box for the current settings
+
+        # The "working" image is the rotated photo cut to the saved crop (or the
+        # whole rotated photo while cropping). Previews, pieces and saving use it.
+        self.flat = self.mask = self.alpha = None
+        self.work_rect = None     # (x, y, w, h) of the working image in rotated coords
+        self.R = np.eye(3)        # original photo coords -> working coords
+        self.Rinv = np.eye(3)
+
+        # Crop: saved as corners in ORIGINAL photo coords so it follows rotation
+        self.crop_corners = None  # None = no crop
+        self.crop_fit_saved = False   # saved crop tracks the drawing's ink box
+        self.cropping = False     # crop mode active
+        self.edit_corners = None  # crop box being edited (original photo coords)
+        self._fit_backup = None   # box to restore when "Crop to the drawing" is unticked
+        self._crop_drag = None
 
         # View: `scale` screen px per photo px; (vx, vy) = photo coords at the
         # canvas's top-left corner. `fit` = follow the window size.
@@ -91,8 +105,9 @@ class DoodleApp:
         self.black = tk.IntVar(value=80)
         self.white = tk.IntVar(value=160)
         self.min_speck = tk.IntVar(value=0)
-        self.pad = tk.IntVar(value=8)
-        self.auto_crop = tk.BooleanVar(value=False)
+        self.pad = tk.IntVar(value=0)    # margin kept around drawings (no longer a slider)
+        self.crop_fit = tk.BooleanVar(value=False)   # "Crop to the drawing" in crop mode
+        self.crop_vars = {k: tk.StringVar(value="0") for k in ("x", "y", "w", "h")}
         self.detect_paper = tk.BooleanVar(value=True)
         self.bg_mode = tk.StringVar(value="Light")
         self.zoom_text = tk.StringVar(value="")
@@ -105,12 +120,19 @@ class DoodleApp:
         root.bind("<Control-equal>", lambda e: self.zoom_step(ZOOM_STEP))
         root.bind("<Control-plus>", lambda e: self.zoom_step(ZOOM_STEP))
         root.bind("<Control-minus>", lambda e: self.zoom_step(1 / ZOOM_STEP))
-        root.bind("<Escape>", self._lasso_cancel)
-        root.bind("<Delete>", lambda e: self.selected is not None
-                  and self.delete_piece(self.selected))
+        root.bind("<Escape>", self._on_escape)
+        root.bind("<Return>", self._on_return)
+        root.bind("<Delete>", self._on_delete)
         _APPS.append(self)
         root.bind_all("<MouseWheel>", _dispatch_wheel)
         root.bind("<Destroy>", self._on_destroy)
+
+    def _on_delete(self, _e=None):
+        """Delete key removes the selected piece, unless you're typing in a box."""
+        if isinstance(self.root.focus_get(), (tk.Entry, ttk.Entry)):
+            return
+        if self.selected is not None:
+            self.delete_piece(self.selected)
 
     def _on_destroy(self, e):
         if e.widget is self.root and self in _APPS:
@@ -158,9 +180,14 @@ class DoodleApp:
         self.canvas = tk.Canvas(body, bg="#808080", highlightthickness=0, cursor="crosshair")
         self.canvas.pack(side="left", fill="both", expand=True)
         self.canvas.bind("<Configure>", self.on_resize)
-        self.canvas.bind("<ButtonPress-1>", self._lasso_start)
-        self.canvas.bind("<B1-Motion>", self._lasso_move)
-        self.canvas.bind("<ButtonRelease-1>", self._lasso_end)
+        # Left button: crop box editing in crop mode, otherwise the lasso
+        self.canvas.bind("<ButtonPress-1>", lambda e: (self._crop_press if self.cropping
+                                                       else self._lasso_start)(e))
+        self.canvas.bind("<B1-Motion>", lambda e: (self._crop_move if self.cropping
+                                                   else self._lasso_move)(e))
+        self.canvas.bind("<ButtonRelease-1>", lambda e: (self._crop_release if self.cropping
+                                                         else self._lasso_end)(e))
+        self.canvas.bind("<Motion>", self._crop_hover)
         for b in (2, 3):  # middle or right drag pans
             self.canvas.bind(f"<ButtonPress-{b}>", self._pan_start)
             self.canvas.bind(f"<B{b}-Motion>", self._pan_move)
@@ -179,10 +206,13 @@ class DoodleApp:
         self.paper_check = ttk.Checkbutton(side, text="Detect paper (ignore the desk)",
                                            variable=self.detect_paper, command=self.reprepare)
         self.paper_check.pack(anchor="w")
-        ttk.Checkbutton(side, text="Crop to the drawing", variable=self.auto_crop,
-                        command=self.schedule_refresh).pack(anchor="w", pady=(6, 0))
-        self._slider(side, "Crop padding (px)", self.pad, 0, 200,
-                     lambda v: self.schedule_refresh())
+
+        ttk.Separator(side).pack(fill="x", pady=10)
+        self.crop_button = ttk.Button(side, text="Crop…", command=self.start_crop)
+        self.crop_button.pack(anchor="w")
+        self.crop_holder = ttk.Frame(side)   # keeps the crop section's place in the column
+        self.crop_holder.pack(fill="x")
+        self._build_crop_section(self.crop_holder)
 
         ttk.Separator(side).pack(fill="x", pady=10)
         ttk.Label(side, text="Rotate photo").pack(anchor="w")
@@ -201,7 +231,30 @@ class DoodleApp:
                "• Line middles gray? Raise Black.\n"
                "• Scroll to zoom, right-drag to pan.\n"
                "• Color it in Godot: Self Modulate.")
-        ttk.Label(side, text=tip, foreground="#555", justify="left").pack(anchor="w", pady=(10, 0))
+        self.tips = ttk.Label(side, text=tip, foreground="#555", justify="left")
+        self.tips.pack(anchor="w", pady=(10, 0))
+
+    def _build_crop_section(self, parent):
+        """The crop settings, shown only while cropping."""
+        sec = self.crop_section = ttk.LabelFrame(parent, text="Crop", padding=8)
+        ttk.Checkbutton(sec, text="Crop to the drawing", variable=self.crop_fit,
+                        command=self.on_crop_fit).grid(row=0, column=0, columnspan=4,
+                                                       sticky="w", pady=(0, 6))
+        self.crop_spins = {}
+        for i, (key, label) in enumerate((("x", "X"), ("y", "Y"), ("w", "Width"), ("h", "Height"))):
+            r, c = divmod(i, 2)
+            ttk.Label(sec, text=label).grid(row=1 + r, column=2 * c, sticky="w",
+                                            padx=(0 if c == 0 else 10, 4), pady=2)
+            sp = ttk.Spinbox(sec, from_=0, to=99999, increment=1, width=7,
+                             textvariable=self.crop_vars[key], command=self._crop_from_spins)
+            sp.grid(row=1 + r, column=2 * c + 1, sticky="w", pady=2)
+            sp.bind("<Return>", lambda e: self._crop_from_spins() or "break")
+            sp.bind("<FocusOut>", lambda e: self._crop_from_spins())
+            self.crop_spins[key] = sp
+        btns = ttk.Frame(sec)
+        btns.grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        ttk.Button(btns, text="Save crop", command=self.save_crop).pack(side="left")
+        ttk.Button(btns, text="Cancel", command=self.cancel_crop).pack(side="left", padx=6)
 
     def _build_pieces_panel(self, parent):
         panel = ttk.Frame(parent, padding=(6, 6))
@@ -266,8 +319,7 @@ class DoodleApp:
 
     def settings(self):
         return core.Settings(black=self.black.get(), white=self.white.get(),
-                             min_speck=self.min_speck.get(),
-                             auto_crop=self.auto_crop.get(), pad=self.pad.get())
+                             min_speck=self.min_speck.get(), pad=self.pad.get())
 
     def on_black(self, _=None):
         if self.black.get() >= self.white.get():
@@ -286,8 +338,6 @@ class DoodleApp:
         self.black.set(d.black)
         self.white.set(d.white)
         self.min_speck.set(d.min_speck)
-        self.pad.set(d.pad)
-        self.auto_crop.set(d.auto_crop)
         if not self.detect_paper.get() and self.bgr is not None:
             self.detect_paper.set(True)
             self.reprepare()
@@ -326,12 +376,18 @@ class DoodleApp:
         self.path, self.base, self.is_piece = p, p.stem, False
         self.root.title(f"Doodle Converter: {p.name}")
         self.paper_check.state(["!disabled"])
+        self._reset_for_new_image(fit_crop=False)
+        self.reprepare()
+        return True
+
+    def _reset_for_new_image(self, fit_crop):
         self.clear_pieces()
+        self._leave_crop_mode()
+        self.crop_corners, self.crop_fit_saved = None, fit_crop
+        self.work_rect = None
         self.quarter = 0
         self.angle.set(0.0)
         self.fit = True
-        self.reprepare()
-        return True
 
     def load_prepared(self, flat, mask, path, base, settings, label):
         """Load an already-prepared image (a piece from another window)."""
@@ -339,15 +395,11 @@ class DoodleApp:
         self.path, self.base, self.is_piece = Path(path), base, True
         self.root.title(f"Doodle Converter: {self.path.name}, {label}")
         self.paper_check.state(["disabled"])
-        self.clear_pieces()
-        self.quarter = 0
-        self.angle.set(0.0)
-        self.fit = True
+        self._reset_for_new_image(fit_crop=True)   # start cropped to the drawing
         self.black.set(settings.black)
         self.white.set(settings.white)
         self.min_speck.set(settings.min_speck)
         self.pad.set(settings.pad)
-        self.auto_crop.set(True)
         self.flat0, self.mask0 = flat, mask
         h, w = flat.shape
         self.status.set(f"Editing {label} of {self.path.name} ({w}×{h}). "
@@ -377,14 +429,13 @@ class DoodleApp:
         if self.flat0 is None:
             return
         angle = float(self.angle.get())
-        self.flat, self.mask = core.rotate_prepared(self.flat0, self.mask0, self.quarter, angle)
-        self.R, _ = core.rotation_matrix(self.flat0.shape, self.quarter, angle)
-        self.Rinv = np.linalg.inv(self.R)
-        if self.fit or refit:
+        self.rflat, self.rmask = core.rotate_prepared(self.flat0, self.mask0, self.quarter, angle)
+        self.Rrot, _ = core.rotation_matrix(self.flat0.shape, self.quarter, angle)
+        self.work_rect = None           # size may have changed: re-place the view
+        if refit:
             self.fit = True
-            self._fit_view()
-        else:
-            self._clamp_view()
+        if self.cropping:
+            self._update_spin_limits()
         self.refresh()
 
     def rotate_photo(self, turns):
@@ -405,9 +456,29 @@ class DoodleApp:
             self.root.after_cancel(self._rotate_job)
         self._rotate_job = self.root.after(60, self.apply_rotation)
 
-    def save_dialog(self):
+    def _ready(self):
+        """Saving and editing need a photo and no crop in progress."""
         if self.flat is None:
             messagebox.showinfo("Nothing to save", "Open a photo first.", parent=self.root)
+            return False
+        if self.cropping:
+            messagebox.showinfo("Finish cropping", "Click Save crop or Cancel first.",
+                                parent=self.root)
+            return False
+        self._flush()
+        return True
+
+    def _flush(self):
+        """Apply any pending slider change right away."""
+        if self._rotate_job:
+            self.root.after_cancel(self._rotate_job)
+            self.apply_rotation()
+        elif self._refresh_job:
+            self.root.after_cancel(self._refresh_job)
+            self.refresh()
+
+    def save_dialog(self):
+        if not self._ready():
             return
         name = f"{self.base}.png" if self.is_piece else f"{self.base}_ink.png"
         p = filedialog.asksaveasfilename(
@@ -418,7 +489,10 @@ class DoodleApp:
             self.save_path(p)
 
     def save_path(self, p):
-        return self._write(p, lambda: core.process(self.flat, self.mask, self.settings()))
+        """Save the working image (the cropped area) as a PNG."""
+        if not self._ready():
+            return False
+        return self._write(p, lambda: core.to_rgba(self.alpha))
 
     def _write(self, p, make_rgba):
         p = Path(p)
@@ -464,6 +538,8 @@ class DoodleApp:
     def edit_piece(self, i):
         """Open piece i in its own converter window, with full-size preview,
         rotation and its own settings. Returns the new window's app."""
+        if not self._ready():
+            return None
         flat, mask = core.piece_source(self.flat, self.mask, self.piece_poly(i))
         win = tk.Toplevel(self.root)
         editor = DoodleApp(win)
@@ -503,9 +579,10 @@ class DoodleApp:
         self.render()
 
     def save_piece(self, i, p):
-        poly = self.piece_poly(i)
-        return self._write(p, lambda: core.process_piece(self.flat, self.mask,
-                                                         self.settings(), poly))
+        if not self._ready():
+            return False
+        poly, pad = self.piece_poly(i), self.pad.get()
+        return self._write(p, lambda: core.to_rgba(core.cut_piece(self.alpha, poly, pad)))
 
     def save_piece_dialog(self, i):
         p = filedialog.asksaveasfilename(
@@ -730,13 +807,255 @@ class DoodleApp:
     def refresh(self):
         """Recompute the full-size result for the current settings, then draw."""
         self._refresh_job = None
-        if self.flat is None:
+        if self.rflat is None:
             return
-        s = self.settings()
-        self.alpha = core.finish_alpha(self.flat, self.mask, s)
-        self._crop = core.crop_box(self.alpha, s.pad) if s.auto_crop else None
+        self.alpha_full = core.finish_alpha(self.rflat, self.rmask, self.settings())
+        if self.cropping and self.crop_fit.get():   # box follows the drawing
+            self._set_edit_rect(self._ink_rect())
+        self._set_work_rect(self._target_rect())
         self._update_rows()
         self.render()
+
+    def _full_rect(self):
+        h, w = self.rflat.shape
+        return 0, 0, w, h
+
+    def _ink_rect(self):
+        """The drawing's bounding box plus padding (the whole image if empty)."""
+        return core.crop_box(self.alpha_full, self.pad.get()) or self._full_rect()
+
+    def _target_rect(self):
+        """Which part of the rotated photo is the working image right now."""
+        if self.cropping:
+            return self._full_rect()
+        if self.crop_fit_saved:
+            return self._ink_rect()
+        if self.crop_corners is not None:
+            h, w = self.rflat.shape
+            return core.rect_from_corners(self.Rrot, self.crop_corners, (w, h))
+        return self._full_rect()
+
+    def _set_work_rect(self, rect):
+        old = self.work_rect
+        x, y, w, h = rect
+        self.flat = self.rflat[y:y + h, x:x + w]
+        self.mask = None if self.rmask is None else self.rmask[y:y + h, x:x + w]
+        self.alpha = self.alpha_full[y:y + h, x:x + w]
+        shift = np.array([[1, 0, -x], [0, 1, -y], [0, 0, 1]], np.float64)
+        self.R = shift @ self.Rrot
+        self.Rinv = np.linalg.inv(self.R)
+        self.work_rect = rect
+        if self.fit:
+            self._fit_view()
+        else:
+            if old is not None:      # keep the same content under the view
+                self.vx += old[0] - x
+                self.vy += old[1] - y
+            self._clamp_view()
+
+    # ------------------------------------------------------------------ crop
+
+    def _corners(self, rect):
+        """Rotated-photo rect -> its corners in original photo coords."""
+        return core.transform_points(np.linalg.inv(self.Rrot), core.rect_corners(rect))
+
+    def edit_rect(self):
+        """The crop box being edited, (x, y, w, h) in rotated-photo coords."""
+        h, w = self.rflat.shape
+        return core.rect_from_corners(self.Rrot, self.edit_corners, (w, h))
+
+    def start_crop(self):
+        if self.rflat is None or self.cropping:
+            return
+        self._flush()
+        self._lasso_cancel()
+        self.cropping = True
+        full = self._full_rect()
+        if self.crop_fit_saved:
+            self.crop_fit.set(True)
+            self._fit_backup = self._corners(full)
+            self.edit_corners = self._corners(self._ink_rect())
+        else:
+            self.crop_fit.set(False)
+            self._fit_backup = None
+            self.edit_corners = (self.crop_corners.copy() if self.crop_corners is not None
+                                 else self._corners(full))
+        self.tips.pack_forget()
+        self.crop_section.pack(fill="x", pady=(6, 0))
+        self.crop_button.state(["disabled"])
+        self._update_spin_limits()
+        self._sync_spins()
+        self.fit = True
+        self.status.set("Crop: drag the box's edges or type values, "
+                        "then Save crop (Enter) or Cancel (Esc).")
+        self.refresh()
+
+    def save_crop(self):
+        if not self.cropping:
+            return
+        rect, full = self.edit_rect(), self._full_rect()
+        if self.crop_fit.get():
+            self.crop_fit_saved, self.crop_corners = True, None
+        elif rect == full:
+            self.crop_fit_saved, self.crop_corners = False, None
+        else:
+            self.crop_fit_saved, self.crop_corners = False, self.edit_corners.copy()
+        self._leave_crop_mode()
+        self.refresh()
+        if self.crop_fit_saved:
+            self.status.set("Cropped to the drawing (follows the sliders).")
+        elif self.crop_corners is None:
+            self.status.set("No crop: using the whole image.")
+        else:
+            self.status.set(f"Cropped to {rect[2]}×{rect[3]} at ({rect[0]}, {rect[1]}).")
+
+    def cancel_crop(self):
+        if not self.cropping:
+            return
+        self._leave_crop_mode()
+        self.refresh()
+        self.status.set("Crop cancelled.")
+
+    def _leave_crop_mode(self):
+        if not self.cropping:
+            return
+        self.cropping = False
+        self._crop_drag = None
+        self._fit_backup = None
+        self.crop_section.pack_forget()
+        self.crop_holder.configure(height=1)   # Tk keeps an emptied frame's size otherwise
+        self.crop_button.state(["!disabled"])
+        if not self.tips.winfo_manager():
+            self.tips.pack(anchor="w", pady=(10, 0))
+        self.canvas.config(cursor="crosshair")
+        self.fit = True
+
+    def set_crop_box(self, x, y, w, h, user=True):
+        """Move/resize the crop box (clamped to the image)."""
+        self._set_edit_rect((x, y, w, h), user)
+        self.render()
+
+    def _set_edit_rect(self, rect, user=False):
+        H, W = self.rflat.shape
+        x, y, w, h = (int(round(v)) for v in rect)
+        x, y = min(max(x, 0), W - 1), min(max(y, 0), H - 1)
+        w, h = min(max(w, 1), W - x), min(max(h, 1), H - y)
+        self.edit_corners = self._corners((x, y, w, h))
+        if user and self.crop_fit.get():    # hand edits replace "to the drawing"
+            self.crop_fit.set(False)
+            self._fit_backup = None
+        self._sync_spins()
+
+    def on_crop_fit(self):
+        if not self.cropping:
+            return
+        if self.crop_fit.get():
+            self._fit_backup = self.edit_corners.copy()
+            self._set_edit_rect(self._ink_rect())
+        elif self._fit_backup is not None:
+            self.edit_corners, self._fit_backup = self._fit_backup, None
+            self._sync_spins()
+        self.render()
+
+    def _sync_spins(self):
+        for key, v in zip("xywh", self.edit_rect()):
+            self.crop_vars[key].set(str(v))
+
+    def _update_spin_limits(self):
+        H, W = self.rflat.shape
+        limits = {"x": (0, W - 1), "y": (0, H - 1), "w": (1, W), "h": (1, H)}
+        for key, (lo, hi) in limits.items():
+            self.crop_spins[key].configure(from_=lo, to=hi)
+
+    def _crop_from_spins(self):
+        """Typed or arrow-clicked values -> crop box."""
+        if not self.cropping:
+            return
+        try:
+            values = tuple(int(float(self.crop_vars[k].get())) for k in "xywh")
+        except ValueError:
+            self._sync_spins()
+            return
+        if values != self.edit_rect():
+            self.set_crop_box(*values)
+
+    # Dragging the crop box
+
+    _CROP_CURSORS = {"l": "sb_h_double_arrow", "r": "sb_h_double_arrow",
+                     "t": "sb_v_double_arrow", "b": "sb_v_double_arrow",
+                     "tl": "size_nw_se", "br": "size_nw_se",
+                     "tr": "size_ne_sw", "bl": "size_ne_sw", "move": "fleur"}
+
+    def _crop_hit(self, cx, cy, tol=8):
+        """Which part of the crop box is at canvas point (cx, cy):
+        'l'/'r'/'t'/'b' edges, corners like 'tl', 'move' inside, or None."""
+        x, y, w, h = self.edit_rect()
+        ax, ay = self.to_canvas(x, y)
+        bx, by = self.to_canvas(x + w, y + h)
+        horiz = vert = ""
+        if ay - tol <= cy <= by + tol:
+            dl, dr = abs(cx - ax), abs(cx - bx)
+            if min(dl, dr) <= tol:
+                horiz = "l" if dl <= dr else "r"
+        if ax - tol <= cx <= bx + tol:
+            dt, db = abs(cy - ay), abs(cy - by)
+            if min(dt, db) <= tol:
+                vert = "t" if dt <= db else "b"
+        if horiz or vert:
+            return vert + horiz
+        if ax < cx < bx and ay < cy < by:
+            return "move"
+        return None
+
+    def _crop_hover(self, e):
+        if not self.cropping or self._crop_drag or self._pan:
+            return
+        cursor = self._CROP_CURSORS.get(self._crop_hit(e.x, e.y), "crosshair")
+        try:
+            self.canvas.config(cursor=cursor)
+        except tk.TclError:          # cursor name not available on this system
+            self.canvas.config(cursor="fleur")
+
+    def _crop_press(self, e):
+        mode = self._crop_hit(e.x, e.y)
+        if mode:
+            self._crop_drag = (mode, self.to_image(e.x, e.y), self.edit_rect())
+
+    def _crop_move(self, e):
+        if not self._crop_drag:
+            return
+        mode, (sx, sy), (x, y, w, h) = self._crop_drag
+        px, py = self.to_image(e.x, e.y)
+        H, W = self.rflat.shape
+        x0, y0, x1, y1 = x, y, x + w, y + h     # x1/y1 are exclusive edges
+        if mode == "move":
+            dx = min(max(round(px - sx), -x0), W - x1)
+            dy = min(max(round(py - sy), -y0), H - y1)
+            x0, x1, y0, y1 = x0 + dx, x1 + dx, y0 + dy, y1 + dy
+        else:
+            if "l" in mode:
+                x0 = min(max(round(px), 0), x1 - 1)
+            if "r" in mode:
+                x1 = min(max(round(px), x0 + 1), W)
+            if "t" in mode:
+                y0 = min(max(round(py), 0), y1 - 1)
+            if "b" in mode:
+                y1 = min(max(round(py), y0 + 1), H)
+        self.set_crop_box(x0, y0, x1 - x0, y1 - y0)
+
+    def _crop_release(self, e):
+        self._crop_drag = None
+        self._crop_hover(e)
+
+    def _on_escape(self, _e=None):
+        if self.cropping:
+            self.cancel_crop()
+        else:
+            self._lasso_cancel()
+
+    def _on_return(self, _e=None):
+        if self.cropping:
+            self.save_crop()
 
     def _background(self, w, h):
         key = (self.bg_mode.get(), w, h)
@@ -790,15 +1109,20 @@ class DoodleApp:
         if view is None:
             return
         shown, x0, y0 = view
-        self._photo = ImageTk.PhotoImage(Image.fromarray(self._composite(shown)))
+        img = self._composite(shown)
+        if self.cropping:   # dim everything outside the crop box
+            bx, by, bw, bh = self.edit_rect()
+            th, tw = img.shape[:2]
+            ix0 = min(max(round((bx - x0) * s), 0), tw)
+            ix1 = min(max(round((bx + bw - x0) * s), 0), tw)
+            iy0 = min(max(round((by - y0) * s), 0), th)
+            iy1 = min(max(round((by + bh - y0) * s), 0), th)
+            dim = (img * 0.45).astype(np.uint8)
+            dim[iy0:iy1, ix0:ix1] = img[iy0:iy1, ix0:ix1]
+            img = dim
+        self._photo = ImageTk.PhotoImage(Image.fromarray(img))
         px, py = self.to_canvas(x0, y0)
         self.canvas.create_image(round(px), round(py), anchor="nw", image=self._photo)
-
-        if self._crop:
-            x, y, bw, bh = self._crop
-            ax, ay = self.to_canvas(x, y)
-            bx, by = self.to_canvas(x + bw, y + bh)
-            self.canvas.create_rectangle(ax, ay, bx, by, outline="#ff3b6b", dash=(5, 3), width=2)
 
         for i in range(len(self.pieces)):
             pts = (self.piece_poly(i) - (self.vx, self.vy)) * s
@@ -814,6 +1138,17 @@ class DoodleApp:
             pts = (np.array(self._lasso) - (self.vx, self.vy)) * s
             self.canvas.create_line(pts.ravel().tolist(), fill=SELECTED_COLOR,
                                     width=2, tags="lasso")
+
+        if self.cropping:   # crop box outline and its 8 drag handles
+            x, y, w, h = self.edit_rect()
+            ax, ay = self.to_canvas(x, y)
+            bx, by = self.to_canvas(x + w, y + h)
+            self.canvas.create_rectangle(ax, ay, bx, by, outline=CROP_COLOR, width=2)
+            mx, my = (ax + bx) / 2, (ay + by) / 2
+            for hx, hy in ((ax, ay), (mx, ay), (bx, ay), (bx, my),
+                           (bx, by), (mx, by), (ax, by), (ax, my)):
+                self.canvas.create_rectangle(hx - 5, hy - 5, hx + 5, hy + 5,
+                                             fill="white", outline=CROP_COLOR, width=2)
 
 
 def main():

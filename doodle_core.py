@@ -155,6 +155,26 @@ def transform_points(matrix, pts):
     return pts @ matrix[:2, :2].T + matrix[:2, 2]
 
 
+def rect_corners(rect):
+    """Centres of the 4 corner pixels of an (x, y, w, h) rectangle."""
+    x, y, w, h = rect
+    return np.array([(x, y), (x + w - 1, y), (x + w - 1, y + h - 1), (x, y + h - 1)],
+                    np.float64)
+
+
+def rect_from_corners(matrix, corners, size):
+    """Bounding rectangle (x, y, w, h) of `corners` after `matrix`, clamped
+    to an image of `size` = (width, height). Inverse of `rect_corners`
+    when the matrix is the identity or a 90-degree turn."""
+    W, H = size
+    pts = transform_points(matrix, corners)
+    x0 = min(max(int(round(pts[:, 0].min())), 0), W - 1)
+    y0 = min(max(int(round(pts[:, 1].min())), 0), H - 1)
+    x1 = min(max(int(round(pts[:, 0].max())), x0), W - 1)
+    y1 = min(max(int(round(pts[:, 1].max())), y0), H - 1)
+    return x0, y0, x1 - x0 + 1, y1 - y0 + 1
+
+
 # ------------------------------------------------ fast: per setting change
 
 def levels_lut(black, white):
