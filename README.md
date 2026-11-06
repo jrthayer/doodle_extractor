@@ -27,11 +27,12 @@ Run `dist\DoodleConverter.exe` (or `python doodle_gui.py`). You can also drag a 
 **Rotate photo:** ⟲ 90° / ⟳ 90° for sideways photos, and **Straighten** (−45° to +45°) for a slight
 tilt. Corners exposed by straightening are transparent. Pieces stay attached to their drawings.
 
-**Zoom:** scroll over the preview to zoom around the cursor, right-drag (or middle-drag) to pan.
+**Moving around:** drag the preview to move the image, scroll to zoom around the cursor.
 The toolbar has −, +, **Fit** and **100%**; Ctrl+0 fits, Ctrl+plus and Ctrl+minus zoom.
 
 ### Cutting out pieces
-Several drawings on one page? **Drag around a drawing** on the preview. When you let go the loop
+Several drawings on one page? Click **Select piece** (above Save all), then **drag around a drawing**
+on the preview. When you let go the loop
 closes and the drawing becomes a **piece** in the panel on the right, while the full photo stays so
 you can loop around the next one.
 - Each piece is cropped tight to the ink inside its loop and follows the
@@ -41,8 +42,9 @@ you can loop around the next one.
 - **Edit…** opens the piece in its own converter window: full-size preview, zoom, rotation and
   its own Black/White settings (starting from the main window's). **Save PNG** there saves the
   piece. You can open several at once.
-- Click a row to select it (highlighted orange on the preview). **Delete** removes the selected
-  piece, and **Esc** cancels a loop you're drawing.
+- Select piece stays on so you can loop several drawings in a row. Click it again (or press
+  **Esc**) to go back to moving the image; Esc while drawing cancels just that loop.
+- Click a row to select it (highlighted orange on the preview). **Delete** removes the selected piece.
 
 ## Command line
 ```

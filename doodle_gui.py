@@ -3,7 +3,8 @@
 Open a photo of a drawing, tune the sliders while watching the preview,
 then save a Godot-ready PNG (white lines, transparent everywhere else).
 Drag around parts of the photo to cut them out as separate pieces.
-Scroll to zoom, right-drag to pan.
+Drag to move the image, scroll to zoom. "Select piece" switches the mouse to
+drawing loops around drawings.
 """
 
 import math
@@ -107,6 +108,7 @@ class DoodleApp:
         self.min_speck = tk.IntVar(value=0)
         self.pad = tk.IntVar(value=0)    # margin kept around drawings (no longer a slider)
         self.crop_fit = tk.BooleanVar(value=False)   # "Crop to the drawing" in crop mode
+        self.select_mode = tk.BooleanVar(value=False)  # left-drag draws loops instead of panning
         self.crop_vars = {k: tk.StringVar(value="0") for k in ("x", "y", "w", "h")}
         self.detect_paper = tk.BooleanVar(value=True)
         self.bg_mode = tk.StringVar(value="Light")
@@ -177,16 +179,13 @@ class DoodleApp:
         self._build_settings(body)
         self._build_pieces_panel(body)
 
-        self.canvas = tk.Canvas(body, bg="#808080", highlightthickness=0, cursor="crosshair")
+        self.canvas = tk.Canvas(body, bg="#808080", highlightthickness=0, cursor="fleur")
         self.canvas.pack(side="left", fill="both", expand=True)
         self.canvas.bind("<Configure>", self.on_resize)
-        # Left button: crop box editing in crop mode, otherwise the lasso
-        self.canvas.bind("<ButtonPress-1>", lambda e: (self._crop_press if self.cropping
-                                                       else self._lasso_start)(e))
-        self.canvas.bind("<B1-Motion>", lambda e: (self._crop_move if self.cropping
-                                                   else self._lasso_move)(e))
-        self.canvas.bind("<ButtonRelease-1>", lambda e: (self._crop_release if self.cropping
-                                                         else self._lasso_end)(e))
+        # Left button: crop box in crop mode, lasso in select mode, else pan
+        self.canvas.bind("<ButtonPress-1>", self._left_press)
+        self.canvas.bind("<B1-Motion>", self._left_move)
+        self.canvas.bind("<ButtonRelease-1>", self._left_release)
         self.canvas.bind("<Motion>", self._crop_hover)
         for b in (2, 3):  # middle or right drag pans
             self.canvas.bind(f"<ButtonPress-{b}>", self._pan_start)
@@ -199,8 +198,15 @@ class DoodleApp:
         side.pack(side="left", fill="y")
         self._slider(side, "Black (solid ink at or below)", self.black, 0, 255, self.on_black)
         self._slider(side, "White (transparent at or above)", self.white, 0, 255, self.on_white)
-        self._slider(side, "Remove specks smaller than (px)", self.min_speck, 0, 2000,
-                     lambda v: self.schedule_refresh())
+        self.specks_scale = self._slider(side, "Remove specks smaller than (px)", self.min_speck,
+                                         0, 100, lambda v: self.schedule_refresh())
+        tip = ("• Grid showing? Lower White.\n"
+               "• Lines broken? Raise White.\n"
+               "• Line middles gray? Raise Black.\n"
+               "• Drag to move, scroll to zoom.\n"
+               "• Color it in Godot: Self Modulate.")
+        self.tips = ttk.Label(side, text=tip, foreground="#555", justify="left")
+        self.tips.pack(anchor="w", pady=(10, 0))
 
         ttk.Separator(side).pack(fill="x", pady=10)
         self.paper_check = ttk.Checkbutton(side, text="Detect paper (ignore the desk)",
@@ -226,13 +232,6 @@ class DoodleApp:
 
         ttk.Separator(side).pack(fill="x", pady=10)
         ttk.Button(side, text="Reset settings", command=self.reset).pack(anchor="w")
-        tip = ("• Grid showing? Lower White.\n"
-               "• Lines broken? Raise White.\n"
-               "• Line middles gray? Raise Black.\n"
-               "• Scroll to zoom, right-drag to pan.\n"
-               "• Color it in Godot: Self Modulate.")
-        self.tips = ttk.Label(side, text=tip, foreground="#555", justify="left")
-        self.tips.pack(anchor="w", pady=(10, 0))
 
     def _build_crop_section(self, parent):
         """The crop settings, shown only while cropping."""
@@ -260,14 +259,18 @@ class DoodleApp:
         panel = ttk.Frame(parent, padding=(6, 6))
         panel.pack(side="right", fill="y")
         ttk.Label(panel, text="Pieces", font=("Segoe UI", 11, "bold")).pack(anchor="w")
-        ttk.Label(panel, text="Drag around a drawing on the\npreview to cut it out.\n"
-                              "Esc cancels, Delete removes.",
+        ttk.Label(panel, text="Click Select piece, then drag\naround a drawing to cut it out.\n"
+                              "Esc stops, Delete removes.",
                   foreground="#555", justify="left").pack(anchor="w")
 
         btns = ttk.Frame(panel)
         btns.pack(side="bottom", fill="x", pady=(6, 0))
         ttk.Button(btns, text="Save all…", command=self.save_all_dialog).pack(side="left")
         ttk.Button(btns, text="Clear", command=self.clear_dialog).pack(side="left", padx=6)
+        self.select_button = ttk.Button(panel, text="Select piece",
+                                        command=lambda: self.set_select_mode(
+                                            not self.select_mode.get()))
+        self.select_button.pack(side="bottom", fill="x", pady=(6, 0))   # just above the row
 
         wrap = ttk.Frame(panel)
         wrap.pack(fill="both", expand=True, pady=(6, 0))
@@ -302,8 +305,10 @@ class DoodleApp:
 
     def _slider(self, parent, label, var, lo, hi, command, resolution=1):
         ttk.Label(parent, text=label).pack(anchor="w", pady=(8, 0))
-        tk.Scale(parent, from_=lo, to=hi, orient="horizontal", variable=var,
-                 length=240, command=command, resolution=resolution).pack(anchor="w")
+        scale = tk.Scale(parent, from_=lo, to=hi, orient="horizontal", variable=var,
+                         length=240, command=command, resolution=resolution)
+        scale.pack(anchor="w")
+        return scale
 
     def _show_hint(self):
         self.canvas.delete("all")
@@ -418,7 +423,7 @@ class DoodleApp:
         h, w = self.flat0.shape
         paper = "page detected" if self.mask0 is not None else "no separate page found"
         self.status.set(f"{self.path.name}: {w}×{h}, {paper}. "
-                        "Scroll to zoom, right-drag to pan.")
+                        "Drag to move, scroll to zoom.")
         self.apply_rotation()
 
     # ------------------------------------------------------- photo rotation
@@ -607,7 +612,7 @@ class DoodleApp:
 
     def save_all_dialog(self):
         if not self.pieces:
-            messagebox.showinfo("No pieces", "Drag around a drawing on the preview first.",
+            messagebox.showinfo("No pieces", "Click Select piece and drag around a drawing first.",
                                 parent=self.root)
             return
         folder = filedialog.askdirectory(title="Save all pieces to…",
@@ -743,7 +748,7 @@ class DoodleApp:
 
     def _pan_end(self, _e):
         self._pan = None
-        self.canvas.config(cursor="crosshair")
+        self.canvas.config(cursor=self._mode_cursor())
 
     # ---------------------------------------------------------------- lasso
 
@@ -868,7 +873,7 @@ class DoodleApp:
         if self.rflat is None or self.cropping:
             return
         self._flush()
-        self._lasso_cancel()
+        self.set_select_mode(False)
         self.cropping = True
         full = self._full_rect()
         if self.crop_fit_saved:
@@ -925,9 +930,9 @@ class DoodleApp:
         self.crop_section.pack_forget()
         self.crop_holder.configure(height=1)   # Tk keeps an emptied frame's size otherwise
         self.crop_button.state(["!disabled"])
-        if not self.tips.winfo_manager():
-            self.tips.pack(anchor="w", pady=(10, 0))
-        self.canvas.config(cursor="crosshair")
+        if not self.tips.winfo_manager():   # back under the specks slider
+            self.tips.pack(anchor="w", pady=(10, 0), after=self.specks_scale)
+        self.canvas.config(cursor=self._mode_cursor())
         self.fit = True
 
     def set_crop_box(self, x, y, w, h, user=True):
@@ -1010,7 +1015,7 @@ class DoodleApp:
     def _crop_hover(self, e):
         if not self.cropping or self._crop_drag or self._pan:
             return
-        cursor = self._CROP_CURSORS.get(self._crop_hit(e.x, e.y), "crosshair")
+        cursor = self._CROP_CURSORS.get(self._crop_hit(e.x, e.y), "arrow")
         try:
             self.canvas.config(cursor=cursor)
         except tk.TclError:          # cursor name not available on this system
@@ -1047,11 +1052,58 @@ class DoodleApp:
         self._crop_drag = None
         self._crop_hover(e)
 
+    # --------------------------------------------------------- mouse modes
+
+    def _mode_cursor(self):
+        return "crosshair" if self.select_mode.get() else "fleur"
+
+    def set_select_mode(self, on):
+        """Select piece mode: left-drag draws loops. Off: left-drag pans."""
+        if on and self.cropping:     # the left button belongs to the crop box right now
+            on = False
+        if not on:
+            self._lasso_cancel()
+        self.select_mode.set(on)
+        self.select_button.state(["pressed"] if on else ["!pressed"])
+        self.select_button.configure(text="Selecting pieces (Esc to stop)" if on
+                                     else "Select piece")
+        if not self.cropping:
+            self.canvas.config(cursor=self._mode_cursor())
+        if self.flat is not None and not self.cropping:
+            self.status.set("Select piece: drag around a drawing. Esc stops." if on
+                            else "Drag to move, scroll to zoom.")
+
+    def _left_press(self, e):
+        if self.cropping:
+            self._crop_press(e)
+        elif self.select_mode.get():
+            self._lasso_start(e)
+        else:
+            self._pan_start(e)
+
+    def _left_move(self, e):
+        if self.cropping:
+            self._crop_move(e)
+        elif self._lasso:
+            self._lasso_move(e)
+        elif self._pan:
+            self._pan_move(e)
+
+    def _left_release(self, e):
+        if self.cropping:
+            self._crop_release(e)
+        elif self._lasso:
+            self._lasso_end(e)
+        elif self._pan:
+            self._pan_end(e)
+
     def _on_escape(self, _e=None):
         if self.cropping:
             self.cancel_crop()
-        else:
+        elif self._lasso:
             self._lasso_cancel()
+        elif self.select_mode.get():
+            self.set_select_mode(False)
 
     def _on_return(self, _e=None):
         if self.cropping:

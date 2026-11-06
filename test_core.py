@@ -500,6 +500,80 @@ def test_crop_tool():
     print("crop tool ok")
 
 
+def test_mouse_modes():
+    import tkinter as tk
+    from doodle_gui import DoodleApp
+
+    class Ev:
+        def __init__(self, x, y):
+            self.x, self.y = int(round(x)), int(round(y))
+
+    bgr = fake_photo()[0]
+    with tempfile.TemporaryDirectory() as d:
+        src = Path(d) / "photo.png"
+        core.save_png(src, bgr)
+        root = tk.Tk()
+        root.geometry("1300x800")
+        app = DoodleApp(root)
+        root.update()
+        app.open_path(src)
+        root.update()
+
+        def left_drag(points):
+            pts = [app.to_canvas(x, y) for x, y in points]
+            app._left_press(Ev(*pts[0]))
+            for p in pts[1:]:
+                app._left_move(Ev(*p))
+            app._left_release(Ev(*pts[-1]))
+
+        # Default: left-drag moves the image, no pieces
+        assert not app.select_mode.get() and str(app.canvas.cget("cursor")) == "fleur"
+        app.zoom_to(1.0)
+        vx, vy = app.vx, app.vy
+        app._left_press(Ev(400, 300))
+        app._left_move(Ev(300, 250))
+        app._left_release(Ev(300, 250))
+        assert app.vx > vx and app.vy > vy and not app.pieces, (vx, vy, app.vx, app.vy)
+        assert str(app.canvas.cget("cursor")) == "fleur"
+        app.zoom_fit()
+
+        # Select piece: loops make pieces, and the mode stays on
+        app.select_button.invoke()
+        root.update()
+        assert str(app.canvas.cget("cursor")) == "crosshair"
+        left_drag(circle_loop())
+        left_drag([(620, 220), (980, 220), (980, 630), (620, 630)])
+        assert len(app.pieces) == 2 and app.select_mode.get()
+
+        # Esc cancels a loop in progress first, then leaves select mode
+        p0 = app.to_canvas(100, 100)
+        app._left_press(Ev(*p0))
+        app._left_move(Ev(p0[0] + 50, p0[1]))
+        app._on_escape()
+        assert app._lasso is None and app.select_mode.get()
+        app._left_release(Ev(p0[0] + 50, p0[1] + 50))
+        assert len(app.pieces) == 2
+        app._on_escape()
+        assert not app.select_mode.get() and str(app.canvas.cget("cursor")) == "fleur"
+
+        # Crop mode turns select mode off and owns the left button
+        app.set_select_mode(True)
+        app.start_crop()
+        assert not app.select_mode.get()
+        app.set_select_mode(True)                   # can't switch on while cropping
+        assert not app.select_mode.get()
+        a = app.to_canvas(1200, 450)
+        b = app.to_canvas(1000, 450)
+        app._left_press(Ev(*a))
+        app._left_move(Ev(*b))
+        app._left_release(Ev(*b))
+        assert abs(app.edit_rect()[2] - 1000) <= 3 and len(app.pieces) == 2
+        app.cancel_crop()
+        assert str(app.canvas.cget("cursor")) == "fleur"
+        root.destroy()
+    print("mouse modes ok")
+
+
 def test_preview_keeps_thin_lines():
     """At fit-to-window zoom on a big photo, thin lines must still show."""
     import tkinter as tk
@@ -535,5 +609,6 @@ if __name__ == "__main__":
     test_rotation_gui()
     test_edit_piece_window()
     test_crop_tool()
+    test_mouse_modes()
     test_preview_keeps_thin_lines()
     print("all tests passed")
