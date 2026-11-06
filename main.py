@@ -12,7 +12,7 @@ import doodle_core as core
 
 
 def main():
-    p = argparse.ArgumentParser(description="Convert a doodle photo to a Godot ink sprite.")
+    p = argparse.ArgumentParser(description="Doodle Extractor: extract the ink from a doodle photo as a Godot sprite.")
     p.add_argument("input", help="photo or scan of the drawing")
     p.add_argument("-o", "--output", help="output PNG (default: <input>_ink.png)")
     p.add_argument("--black", type=int, default=80, help="ink this dark or darker is solid")

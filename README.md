@@ -1,18 +1,22 @@
-# Doodle Converter
+# Doodle Extractor
 
-Turns a photo of a hand drawing into a Godot-ready PNG: **white lines, transparent everywhere else**.
-In Godot, put it on a `Sprite2D` and set **Self Modulate** to recolor the lines.
+Crops, rotates and cuts drawings out of photos. **Extract ink** turns them into Godot-ready PNGs:
+**white lines, transparent everywhere else**. In Godot, put one on a `Sprite2D` and set
+**Self Modulate** to recolor the lines.
 
 ## Using the app
-Run `dist\DoodleConverter.exe` (or `python doodle_gui.py`). You can also drag a photo onto the exe.
+Run `dist\DoodleExtractor.exe` (or `python doodle_gui.py`). You can also drag a photo onto the exe.
 
 1. **Open…** (Ctrl+O): pick the photo.
-2. Adjust the sliders while watching the preview:
+2. By default the photo is shown and saved **as is** (rotated and cropped if you did).
+   Click **Extract ink** to turn on ink extraction. The button stays pressed and its settings appear:
    - **Black**: ink this dark or darker is fully solid.
    - **White**: anything this light or lighter is transparent. Lower it if the grid shows.
    - **Remove specks**: erases dots smaller than N pixels.
    - **Detect paper**: ignores the desk around the page.
-   - The preview background and line color are for viewing only. The saved file is always white.
+   - The preview background and line color are for viewing only. The saved ink is always white.
+
+   Click **Extract ink** again to go back to the photo. Your slider values are kept for next time.
 3. **Save PNG…** (Ctrl+S): choose where to save the image (the cropped area, if you cropped).
 
 **Crop…** shows a crop box over the whole photo, starting at the edges:
@@ -35,12 +39,12 @@ Several drawings on one page? Click **Select piece** (above Save all), then **dr
 on the preview. When you let go the loop
 closes and the drawing becomes a **piece** in the panel on the right, while the full photo stays so
 you can loop around the next one.
-- Each piece is cropped tight to the ink inside its loop and follows the
-  current slider settings.
+- Without Extract ink a piece is the photo inside its loop (transparent outside it). With it, the
+  piece is the extracted ink, cropped tight to the drawing.
 - **Save…** on a row saves that piece; **Save all…** writes every piece to a folder as
   `<photo>_piece1.png`, `<photo>_piece2.png`, …
-- **Edit…** opens the piece in its own converter window: full-size preview, zoom, rotation and
-  its own Black/White settings (starting from the main window's). **Save PNG** there saves the
+- **Edit…** opens the piece in its own window: full-size preview, zoom, rotation and
+  its own settings (starting from the main window's, including whether Extract ink is on). **Save PNG** there saves the
   piece. You can open several at once.
 - Select piece stays on so you can loop several drawings in a row. Click it again (or press
   **Esc**) to go back to moving the image; Esc while drawing cancels just that loop.
@@ -67,7 +71,7 @@ python main.py photo.jpg [-o out.png] [--black 80] [--white 160] [--min-speck 50
 ## Building the exe
 ```
 pip install -r requirements.txt
-pyinstaller --noconfirm --onefile --windowed --name DoodleConverter doodle_gui.py
+pyinstaller --noconfirm --onefile --windowed --name DoodleExtractor doodle_gui.py
 ```
-The result is `dist\DoodleConverter.exe` (about 70 MB). The first launch takes a few seconds.
+The result is `dist\DoodleExtractor.exe` (about 70 MB). The first launch takes a few seconds.
 Windows Defender sometimes flags homemade PyInstaller exes; that's a known false alarm.

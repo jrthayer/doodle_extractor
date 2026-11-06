@@ -125,6 +125,7 @@ def test_gui():
         app = DoodleApp(root)
         root.update()
         assert app.open_path(src)
+        app.set_extract(True)          # these tests check extracted ink
         root.update()
         app.white.set(150)
         app.min_speck.set(50)
@@ -254,6 +255,7 @@ def test_rotation_gui():
         app = DoodleApp(root)
         root.update()
         app.open_path(src)
+        app.set_extract(True)          # these tests check extracted ink
         root.update()
 
         app.add_piece(circle_loop())
@@ -305,6 +307,7 @@ def test_edit_piece_window():
         app = DoodleApp(root)
         root.update()
         app.open_path(src)
+        app.set_extract(True)          # these tests check extracted ink
         app.white.set(150)
         app.refresh()
         app.add_piece(circle_loop())
@@ -375,6 +378,7 @@ def test_crop_tool():
         app = DoodleApp(root)
         root.update()
         app.open_path(src)
+        app.set_extract(True)          # these tests check extracted ink
         root.update()
         app.add_piece(circle_loop())          # made before cropping
 
@@ -517,6 +521,7 @@ def test_mouse_modes():
         app = DoodleApp(root)
         root.update()
         app.open_path(src)
+        app.set_extract(True)          # these tests check extracted ink
         root.update()
 
         def left_drag(points):
@@ -574,6 +579,103 @@ def test_mouse_modes():
     print("mouse modes ok")
 
 
+def test_extract_toggle():
+    import tkinter as tk
+    from doodle_gui import DoodleApp
+
+    def read(p):
+        return cv2.imdecode(np.fromfile(str(p), np.uint8), cv2.IMREAD_UNCHANGED)
+
+    # A colored photo, so "the photo as is" is easy to tell apart from ink
+    bgr = fake_photo()[0].copy()
+    bgr[:, :, 0] = (bgr[:, :, 0] * 0.6).astype(np.uint8)       # tint it
+    with tempfile.TemporaryDirectory() as d:
+        src = Path(d) / "photo.png"
+        core.save_png(src, bgr)
+        root = tk.Tk()
+        root.geometry("1300x800")
+        app = DoodleApp(root)
+        root.update()
+        app.open_path(src)
+        root.update()
+        out = Path(d) / "out.png"
+
+        # Default: no extraction. Section hidden, button up, photo saved as is
+        assert not app.extract.get() and not app.extract_section.winfo_manager()
+        assert "pressed" not in app.extract_button.state()
+        assert str(app.tint_swatch.cget("state")) == "disabled"
+        assert app.save_path(out)
+        saved = read(out)
+        assert saved.shape == (900, 1200, 4) and (saved[:, :, 3] == 255).all()
+        assert np.array_equal(saved[:, :, :3], bgr), "unfiltered photo"
+
+        # Raw piece: the photo inside the loop, transparent outside
+        app.add_piece(circle_loop())
+        assert app.save_piece(0, out)
+        piece = read(out)
+        assert piece.shape[:2] == (381, 381), piece.shape      # loop bounds (r=190)
+        assert piece[190, 190, 3] == 255 and piece[0, 0, 3] == 0
+        assert np.array_equal(piece[190, 190, :3], bgr[400, 400])
+
+        # Turning it on: section shows, button pressed, white ink is saved
+        app.white.set(150)
+        app.extract_button.invoke()
+        root.update()
+        assert app.extract.get() and app.extract_section.winfo_manager()
+        assert "pressed" in app.extract_button.state()
+        assert app.save_path(out)
+        ink = read(out)
+        assert (ink[:, :, :3] == 255).all() and ink[:, :, 3].min() == 0
+        flat, mask = core.prepare(bgr)
+        assert np.array_equal(ink, core.process(flat, mask, app.settings()))
+
+        # Off again: section collapses, photo is back, slider values kept
+        app.extract_button.invoke()
+        root.update()
+        assert not app.extract.get() and not app.extract_section.winfo_manager()
+        assert app.extract_holder.winfo_height() <= 1
+        assert app.white.get() == 150, "slider value remembered"
+        assert app.save_path(out) and np.array_equal(read(out)[:, :, :3], bgr)
+
+        # Rotation applies to the photo too; corners exposed by straightening are clear
+        app.rotate_photo(1)
+        assert app.save_path(out)
+        assert np.array_equal(read(out)[:, :, :3], cv2.rotate(bgr, cv2.ROTATE_90_CLOCKWISE))
+        app.angle.set(10)
+        app.apply_rotation()
+        assert app.save_path(out)
+        tilted = read(out)
+        assert tilted[0, 0, 3] == 0 and tilted[tilted.shape[0] // 2, tilted.shape[1] // 2, 3] == 255
+        app.reset_rotation()
+
+        # Crop applies to the photo
+        app.start_crop()
+        app.set_crop_box(100, 50, 300, 200)
+        app.save_crop()
+        assert app.save_path(out)
+        assert np.array_equal(read(out)[:, :, :3], bgr[50:250, 100:400])
+        app.start_crop()
+        app.set_crop_box(0, 0, 1200, 900)
+        app.save_crop()
+
+        # Editors inherit the state; an unfiltered editor shows the photo piece
+        editor = app.edit_piece(0)
+        root.update()
+        assert not editor.extract.get() and editor.white.get() == 150
+        assert editor.save_path(out)
+        ed = read(out)
+        assert ed[:, :, 3].max() == 255 and ed[0, 0, 3] == 0, "transparent outside the loop"
+        editor.set_extract(True)
+        assert editor.save_path(out) and (read(out)[:, :, :3] == 255).all()
+        editor.root.destroy()
+        app.set_extract(True)
+        editor = app.edit_piece(0)
+        assert editor.extract.get() and editor.extract_section.winfo_manager()
+        editor.root.destroy()
+        root.destroy()
+    print("extract toggle ok")
+
+
 def test_preview_keeps_thin_lines():
     """At fit-to-window zoom on a big photo, thin lines must still show."""
     import tkinter as tk
@@ -590,6 +692,7 @@ def test_preview_keeps_thin_lines():
         app = DoodleApp(root)
         root.update()
         app.open_path(src)
+        app.set_extract(True)          # these tests check extracted ink
         root.update()
         app.zoom_fit()
         assert app.scale < 0.25, app.scale
@@ -610,5 +713,6 @@ if __name__ == "__main__":
     test_edit_piece_window()
     test_crop_tool()
     test_mouse_modes()
+    test_extract_toggle()
     test_preview_keeps_thin_lines()
     print("all tests passed")

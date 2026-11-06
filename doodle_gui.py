@@ -1,8 +1,8 @@
-"""Doodle Converter: windowed app.
+"""Doodle Extractor: windowed app.
 
-Open a photo of a drawing, tune the sliders while watching the preview,
-then save a Godot-ready PNG (white lines, transparent everywhere else).
-Drag around parts of the photo to cut them out as separate pieces.
+Open a photo of a drawing. "Extract ink" turns it into a Godot-ready PNG
+(white lines, transparent everywhere else); without it the photo is kept as is.
+Crop, rotate, and cut out parts of the photo as separate pieces.
 Drag to move the image, scroll to zoom. "Select piece" switches the mouse to
 drawing loops around drawings.
 """
@@ -20,6 +20,7 @@ from PIL import Image, ImageTk
 
 import doodle_core as core
 
+APP_NAME = "Doodle Extractor"
 IMAGE_TYPES = [("Images", "*.jpg *.jpeg *.png *.webp *.bmp *.tif *.tiff"),
                ("All files", "*.*")]
 BACKGROUNDS = ("Light", "Dark", "Checker")
@@ -51,14 +52,18 @@ def _dispatch_wheel(e):
 class DoodleApp:
     def __init__(self, root):
         self.root = root      # a tk.Tk (main window) or tk.Toplevel (piece editor)
-        root.title("Doodle Converter")
+        root.title(APP_NAME)
         root.geometry("1350x800")
         root.minsize(900, 500)
 
         self.path = None          # current photo
         self.base = None          # file-name stem for saving
         self.is_piece = False     # True in a piece-editor window
-        self.bgr = None           # full-res photo
+        self.bgr = None           # full-res photo to prepare from (None in piece editors)
+        self.color0 = None        # color layer, unrotated (what's shown without Extract ink)
+        self.valid0 = None        # its alpha (None = fully opaque)
+        self.rcolor = self.rvalid = None   # ... after photo rotation
+        self.color = self.valid = None     # ... cut to the working rect
         self.flat0 = None         # full-res prepared image, unrotated
         self.mask0 = None
         self.rflat = None         # ... after photo rotation (full size)
@@ -109,6 +114,7 @@ class DoodleApp:
         self.pad = tk.IntVar(value=0)    # margin kept around drawings (no longer a slider)
         self.crop_fit = tk.BooleanVar(value=False)   # "Crop to the drawing" in crop mode
         self.select_mode = tk.BooleanVar(value=False)  # left-drag draws loops instead of panning
+        self.extract = tk.BooleanVar(value=False)      # show/save extracted ink instead of the photo
         self.crop_vars = {k: tk.StringVar(value="0") for k in ("x", "y", "w", "h")}
         self.detect_paper = tk.BooleanVar(value=True)
         self.bg_mode = tk.StringVar(value="Light")
@@ -116,6 +122,7 @@ class DoodleApp:
         self.angle = tk.DoubleVar(value=0.0)        # photo straighten, degrees clockwise
 
         self._build_ui()
+        self.set_extract(False, redraw=False)   # default: the photo as is
         root.bind("<Control-o>", lambda e: self.open_dialog())
         root.bind("<Control-s>", lambda e: self.save_dialog())
         root.bind("<Control-0>", lambda e: self.zoom_fit())
@@ -196,22 +203,12 @@ class DoodleApp:
     def _build_settings(self, parent):
         side = ttk.Frame(parent, padding=(10, 6))
         side.pack(side="left", fill="y")
-        self._slider(side, "Black (solid ink at or below)", self.black, 0, 255, self.on_black)
-        self._slider(side, "White (transparent at or above)", self.white, 0, 255, self.on_white)
-        self.specks_scale = self._slider(side, "Remove specks smaller than (px)", self.min_speck,
-                                         0, 100, lambda v: self.schedule_refresh())
-        tip = ("• Grid showing? Lower White.\n"
-               "• Lines broken? Raise White.\n"
-               "• Line middles gray? Raise Black.\n"
-               "• Drag to move, scroll to zoom.\n"
-               "• Color it in Godot: Self Modulate.")
-        self.tips = ttk.Label(side, text=tip, foreground="#555", justify="left")
-        self.tips.pack(anchor="w", pady=(10, 0))
-
-        ttk.Separator(side).pack(fill="x", pady=10)
-        self.paper_check = ttk.Checkbutton(side, text="Detect paper (ignore the desk)",
-                                           variable=self.detect_paper, command=self.reprepare)
-        self.paper_check.pack(anchor="w")
+        self.extract_button = ttk.Button(side, text="Extract ink",
+                                         command=lambda: self.set_extract(not self.extract.get()))
+        self.extract_button.pack(anchor="w")
+        self.extract_holder = ttk.Frame(side)   # keeps the section's place in the column
+        self.extract_holder.pack(fill="x")
+        self._build_extract_section(self.extract_holder)
 
         ttk.Separator(side).pack(fill="x", pady=10)
         self.crop_button = ttk.Button(side, text="Crop…", command=self.start_crop)
@@ -230,8 +227,25 @@ class DoodleApp:
         self._slider(side, "Straighten (degrees clockwise)", self.angle, -45, 45,
                      lambda v: self.schedule_rotate(), resolution=0.5)
 
-        ttk.Separator(side).pack(fill="x", pady=10)
-        ttk.Button(side, text="Reset settings", command=self.reset).pack(anchor="w")
+    def _build_extract_section(self, parent):
+        """Ink extraction settings, shown only while Extract ink is on."""
+        sec = self.extract_section = ttk.LabelFrame(parent, text="Extract ink", padding=8)
+        self._slider(sec, "Black (solid ink at or below)", self.black, 0, 255, self.on_black,
+                     length=220)
+        self._slider(sec, "White (transparent at or above)", self.white, 0, 255, self.on_white,
+                     length=220)
+        self.specks_scale = self._slider(sec, "Remove specks smaller than (px)", self.min_speck,
+                                         0, 100, lambda v: self.schedule_refresh(), length=220)
+        tip = ("• Grid showing? Lower White.\n"
+               "• Lines broken? Raise White.\n"
+               "• Line middles gray? Raise Black.\n"
+               "• Color it in Godot: Self Modulate.")
+        self.tips = ttk.Label(sec, text=tip, foreground="#555", justify="left")
+        self.tips.pack(anchor="w", pady=(10, 0))
+        self.paper_check = ttk.Checkbutton(sec, text="Detect paper (ignore the desk)",
+                                           variable=self.detect_paper, command=self.reprepare)
+        self.paper_check.pack(anchor="w", pady=(10, 0))
+        ttk.Button(sec, text="Reset sliders", command=self.reset).pack(anchor="w", pady=(8, 0))
 
     def _build_crop_section(self, parent):
         """The crop settings, shown only while cropping."""
@@ -303,10 +317,10 @@ class DoodleApp:
             w = w.master
         return False
 
-    def _slider(self, parent, label, var, lo, hi, command, resolution=1):
+    def _slider(self, parent, label, var, lo, hi, command, resolution=1, length=240):
         ttk.Label(parent, text=label).pack(anchor="w", pady=(8, 0))
         scale = tk.Scale(parent, from_=lo, to=hi, orient="horizontal", variable=var,
-                         length=240, command=command, resolution=resolution)
+                         length=length, command=command, resolution=resolution)
         scale.pack(anchor="w")
         return scale
 
@@ -348,6 +362,22 @@ class DoodleApp:
             self.reprepare()
         self.schedule_refresh()
 
+    def set_extract(self, on, redraw=True):
+        """Extract ink on: show/save the extracted ink and open its settings.
+        Off: show/save the photo itself (the slider values are kept)."""
+        self.extract.set(on)
+        self.extract_button.state(["pressed"] if on else ["!pressed"])
+        self.tint_swatch.configure(state="normal" if on else "disabled")
+        if on:
+            self.extract_section.pack(fill="x", pady=(6, 0))
+        else:
+            self.extract_section.pack_forget()
+            self.extract_holder.configure(height=1)   # Tk keeps an emptied frame's size
+        if redraw and self.rflat is not None:
+            self.refresh()
+            self.status.set("Extract ink: tune the sliders. Click Extract ink again to turn "
+                            "it off." if on else "Showing the photo as is.")
+
     def pick_tint(self):
         rgb, _ = colorchooser.askcolor(color=self._hex(self.tint), title="Preview line color",
                                        parent=self.root)
@@ -379,7 +409,8 @@ class DoodleApp:
             messagebox.showerror("Couldn't open image", f"{p}\n\n{e}", parent=self.root)
             return False
         self.path, self.base, self.is_piece = p, p.stem, False
-        self.root.title(f"Doodle Converter: {p.name}")
+        self.color0, self.valid0 = self.bgr, None
+        self.root.title(f"{APP_NAME}: {p.name}")
         self.paper_check.state(["!disabled"])
         self._reset_for_new_image(fit_crop=False)
         self.reprepare()
@@ -394,11 +425,16 @@ class DoodleApp:
         self.angle.set(0.0)
         self.fit = True
 
-    def load_prepared(self, flat, mask, path, base, settings, label):
-        """Load an already-prepared image (a piece from another window)."""
+    def load_prepared(self, flat, mask, path, base, settings, label,
+                      color=None, valid=None, extract=True):
+        """Load an already-prepared image (a piece from another window).
+        `color`/`valid` are the matching unfiltered photo and its alpha."""
         self.bgr = None                     # nothing to re-prepare from
         self.path, self.base, self.is_piece = Path(path), base, True
-        self.root.title(f"Doodle Converter: {self.path.name}, {label}")
+        if color is None:                   # no photo given: show the prepared gray
+            color = cv2.cvtColor(flat, cv2.COLOR_GRAY2BGR)
+        self.color0, self.valid0 = color, valid
+        self.root.title(f"{APP_NAME}: {self.path.name}, {label}")
         self.paper_check.state(["disabled"])
         self._reset_for_new_image(fit_crop=True)   # start cropped to the drawing
         self.black.set(settings.black)
@@ -406,6 +442,7 @@ class DoodleApp:
         self.min_speck.set(settings.min_speck)
         self.pad.set(settings.pad)
         self.flat0, self.mask0 = flat, mask
+        self.set_extract(extract, redraw=False)
         h, w = flat.shape
         self.status.set(f"Editing {label} of {self.path.name} ({w}×{h}). "
                         "Save PNG saves this piece.")
@@ -435,6 +472,7 @@ class DoodleApp:
             return
         angle = float(self.angle.get())
         self.rflat, self.rmask = core.rotate_prepared(self.flat0, self.mask0, self.quarter, angle)
+        self.rcolor, self.rvalid = core.rotate_color(self.color0, self.valid0, self.quarter, angle)
         self.Rrot, _ = core.rotation_matrix(self.flat0.shape, self.quarter, angle)
         self.work_rect = None           # size may have changed: re-place the view
         if refit:
@@ -497,7 +535,20 @@ class DoodleApp:
         """Save the working image (the cropped area) as a PNG."""
         if not self._ready():
             return False
-        return self._write(p, lambda: core.to_rgba(self.alpha))
+        return self._write(p, self._image_rgba)
+
+    # What gets saved: extracted ink (white + alpha) or the photo itself (BGRA)
+
+    def _image_rgba(self):
+        if self.extract.get():
+            return core.to_rgba(self.alpha)
+        return core.color_rgba(self.color, self.valid)
+
+    def _piece_rgba(self, i):
+        poly = self.piece_poly(i)
+        if self.extract.get():
+            return core.to_rgba(core.cut_piece(self.alpha, poly, self.pad.get()))
+        return core.color_piece(self.color, self.valid, poly)
 
     def _write(self, p, make_rgba):
         p = Path(p)
@@ -545,13 +596,16 @@ class DoodleApp:
         rotation and its own settings. Returns the new window's app."""
         if not self._ready():
             return None
-        flat, mask = core.piece_source(self.flat, self.mask, self.piece_poly(i))
+        poly = self.piece_poly(i)
+        flat, mask = core.piece_source(self.flat, self.mask, poly)
+        color, valid = core.color_source(self.color, self.valid, poly)   # same box
         win = tk.Toplevel(self.root)
         editor = DoodleApp(win)
         x, y = self.root.winfo_rootx(), self.root.winfo_rooty()
         win.geometry(f"1350x800+{x + 40}+{max(y - 10, 0)}")
         editor.load_prepared(flat, mask, self.path, self._piece_name(i)[:-4],
-                             self.settings(), f"piece {i + 1}")
+                             self.settings(), f"piece {i + 1}",
+                             color=color, valid=valid, extract=self.extract.get())
         return editor
 
     def delete_piece(self, i):
@@ -586,8 +640,7 @@ class DoodleApp:
     def save_piece(self, i, p):
         if not self._ready():
             return False
-        poly, pad = self.piece_poly(i), self.pad.get()
-        return self._write(p, lambda: core.to_rgba(core.cut_piece(self.alpha, poly, pad)))
+        return self._write(p, lambda: self._piece_rgba(i))
 
     def save_piece_dialog(self, i):
         p = filedialog.asksaveasfilename(
@@ -658,14 +711,13 @@ class DoodleApp:
         """Refresh piece thumbnails and sizes from the current result."""
         if self.alpha is None:
             return
-        pad = self.pad.get()
         for i in range(min(len(self.pieces), len(self._rows))):
-            cut = core.cut_piece(self.alpha, self.piece_poly(i), pad)
-            h, w = cut.shape
+            out = self._piece_rgba(i)
+            h, w = out.shape[:2]
             k = min(THUMB / w, THUMB / h)
-            small = cv2.resize(cut, (max(int(w * k), 1), max(int(h * k), 1)),
+            small = cv2.resize(out, (max(int(w * k), 1), max(int(h * k), 1)),
                                interpolation=cv2.INTER_AREA if k < 1 else cv2.INTER_LINEAR)
-            img = ImageTk.PhotoImage(Image.fromarray(self._composite(small)))
+            img = ImageTk.PhotoImage(Image.fromarray(self._preview_rgb(small)))
             thumb, text = self._rows[i][1:3]
             thumb.configure(image=img, width=THUMB, height=THUMB)
             self._thumbs[i] = img
@@ -846,6 +898,8 @@ class DoodleApp:
         self.flat = self.rflat[y:y + h, x:x + w]
         self.mask = None if self.rmask is None else self.rmask[y:y + h, x:x + w]
         self.alpha = self.alpha_full[y:y + h, x:x + w]
+        self.color = self.rcolor[y:y + h, x:x + w]
+        self.valid = self.rvalid[y:y + h, x:x + w]
         shift = np.array([[1, 0, -x], [0, 1, -y], [0, 0, 1]], np.float64)
         self.R = shift @ self.Rrot
         self.Rinv = np.linalg.inv(self.R)
@@ -1133,23 +1187,39 @@ class DoodleApp:
         out = self._background(w, h) * (1 - a) + np.array(self.tint, np.float32) * a
         return out.astype(np.uint8)
 
-    def _view_alpha(self):
-        """The visible part of the result, resized to screen pixels.
-        Returns (alpha, x0, y0) with (x0, y0) in photo coords, or None."""
+    def _composite_color(self, bgr, alpha):
+        """The photo (with its alpha) over the preview background, as RGB."""
+        h, w = alpha.shape
+        a = (alpha.astype(np.float32) / 255)[:, :, None]
+        out = self._background(w, h) * (1 - a) + bgr[:, :, ::-1].astype(np.float32) * a
+        return out.astype(np.uint8)
+
+    def _preview_rgb(self, bgra):
+        """How a saved BGRA image looks in the preview (thumbnails)."""
+        if self.extract.get():
+            return self._composite(bgra[:, :, 3])
+        return self._composite_color(bgra[:, :, :3], bgra[:, :, 3])
+
+    def _view_crop(self, arr):
+        """The visible part of a working-image layer, resized to screen pixels.
+        Returns (layer, x0, y0) with (x0, y0) in photo coords, or None."""
         cw, ch = self._canvas_size()
-        H, W = self.alpha.shape
+        H, W = arr.shape[:2]
         s = self.scale
         x0, y0 = max(math.floor(self.vx), 0), max(math.floor(self.vy), 0)
         x1 = min(math.ceil(self.vx + cw / s), W)
         y1 = min(math.ceil(self.vy + ch / s), H)
         if x1 <= x0 or y1 <= y0:
             return None
-        # Resize the *result*, not the photo: shrinking the photo first would
-        # blend thin lines into the paper until they fell below White.
-        crop = self.alpha[y0:y1, x0:x1]
+        crop = arr[y0:y1, x0:x1]
         tw, th = max(round((x1 - x0) * s), 1), max(round((y1 - y0) * s), 1)
         interp = cv2.INTER_AREA if s < 1 else cv2.INTER_NEAREST
         return cv2.resize(crop, (tw, th), interpolation=interp), x0, y0
+
+    def _view_alpha(self):
+        # Resize the *result*, not the photo: shrinking the photo first would
+        # blend thin lines into the paper until they fell below White.
+        return self._view_crop(self.alpha)
 
     def render(self):
         """Draw the visible part of the result at the current zoom."""
@@ -1157,11 +1227,18 @@ class DoodleApp:
             return
         s = self.scale
         self.canvas.delete("all")
-        view = self._view_alpha()
-        if view is None:
-            return
-        shown, x0, y0 = view
-        img = self._composite(shown)
+        if self.extract.get():
+            view = self._view_alpha()
+            if view is None:
+                return
+            shown, x0, y0 = view
+            img = self._composite(shown)
+        else:
+            view = self._view_crop(self.color)
+            if view is None:
+                return
+            shown, x0, y0 = view
+            img = self._composite_color(shown, self._view_crop(self.valid)[0])
         if self.cropping:   # dim everything outside the crop box
             bx, by, bw, bh = self.edit_rect()
             th, tw = img.shape[:2]

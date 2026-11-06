@@ -134,19 +134,35 @@ def rotation_matrix(shape, quarter=0, angle=0.0):
     return A, size
 
 
-def rotate_prepared(flat, mask, quarter=0, angle=0.0):
-    """Rotate a prepared photo. New corners become paper (transparent)."""
+def rotate_image(img, quarter=0, angle=0.0, border=0, interp=cv2.INTER_LINEAR):
+    """Rotate a 1- or 3-channel image (lossless for whole quarter turns, then
+    `angle` degrees clockwise). New corners are filled with `border`."""
+    if img is None:
+        return None
     q = quarter % 4
     if q:
-        flat = cv2.rotate(flat, _ROTATE_CODES[q])
-        mask = None if mask is None else cv2.rotate(mask, _ROTATE_CODES[q])
+        img = cv2.rotate(img, _ROTATE_CODES[q])
     if angle:
-        h, w = flat.shape
+        h, w = img.shape[:2]
         M, size = _fine_matrix(w, h, angle)
-        flat = cv2.warpAffine(flat, M, size, flags=cv2.INTER_LINEAR, borderValue=255)
-        if mask is not None:
-            mask = cv2.warpAffine(mask, M, size, flags=cv2.INTER_NEAREST, borderValue=0)
-    return flat, mask
+        border = (border,) * 3 if img.ndim == 3 else border
+        img = cv2.warpAffine(img, M, size, flags=interp, borderValue=border)
+    return img
+
+
+def rotate_prepared(flat, mask, quarter=0, angle=0.0):
+    """Rotate a prepared photo. New corners become paper (transparent)."""
+    return (rotate_image(flat, quarter, angle, 255, cv2.INTER_LINEAR),
+            rotate_image(mask, quarter, angle, 0, cv2.INTER_NEAREST))
+
+
+def rotate_color(bgr, valid, quarter=0, angle=0.0):
+    """Rotate a color photo and its alpha (`valid`, None = fully opaque).
+    New corners become transparent. Returns (bgr, valid)."""
+    if valid is None:
+        valid = np.full(bgr.shape[:2], 255, np.uint8)
+    return (rotate_image(bgr, quarter, angle, 0, cv2.INTER_LINEAR),
+            rotate_image(valid, quarter, angle, 0, cv2.INTER_LINEAR))
 
 
 def transform_points(matrix, pts):
@@ -276,21 +292,57 @@ def piece_source(flat, mask, polygon, margin=24):
     a piece on its own. Outside the loop becomes plain paper (255), with a
     soft edge; `margin` px of paper is kept around the loop's bounds.
     Returns (flat, mask) like `prepare`."""
-    H, W = flat.shape
+    bounds = _loop_bounds(flat.shape[:2], polygon, margin)
+    if bounds is None:
+        return np.full((1, 1), 255, np.uint8), None
+    (x0, y0, x1, y1), region = bounds
+    ink = 255 - flat[y0:y1, x0:x1].astype(np.uint16)          # darkness
+    sub = (255 - ink * region // 255).astype(np.uint8)       # fade to paper outside
+    sub_mask = None if mask is None else mask[y0:y1, x0:x1].copy()
+    return sub, sub_mask
+
+
+def _loop_bounds(shape, polygon, margin):
+    """The loop's bounding box (plus `margin`, clamped to the image) and the
+    loop filled in (soft-edged) over that box. None if it's off the image."""
+    H, W = shape
     pts = np.asarray(polygon, np.int32).reshape(-1, 2)
     x0 = max(int(pts[:, 0].min()) - margin, 0)
     y0 = max(int(pts[:, 1].min()) - margin, 0)
     x1 = min(int(pts[:, 0].max()) + margin + 1, W)
     y1 = min(int(pts[:, 1].max()) + margin + 1, H)
     if x1 <= x0 or y1 <= y0:
-        return np.full((1, 1), 255, np.uint8), None
-
+        return None
     region = np.zeros((y1 - y0, x1 - x0), np.uint8)
     cv2.fillPoly(region, [(pts - (x0, y0)).reshape(-1, 1, 2)], 255, lineType=cv2.LINE_AA)
-    ink = 255 - flat[y0:y1, x0:x1].astype(np.uint16)          # darkness
-    sub = (255 - ink * region // 255).astype(np.uint8)       # fade to paper outside
-    sub_mask = None if mask is None else mask[y0:y1, x0:x1].copy()
-    return sub, sub_mask
+    return (x0, y0, x1, y1), region
+
+
+# ------------------------------------------------- unfiltered (color) output
+
+def color_rgba(bgr, valid):
+    """A color image as BGRA for saving, with `valid` as its alpha."""
+    out = cv2.cvtColor(bgr, cv2.COLOR_BGR2BGRA)
+    out[:, :, 3] = 255 if valid is None else valid
+    return out
+
+
+def color_source(bgr, valid, polygon, margin=24):
+    """The color counterpart of `piece_source`: the same box, with alpha =
+    inside the loop (soft edge) and inside the image. Returns (bgr, valid)."""
+    bounds = _loop_bounds(bgr.shape[:2], polygon, margin)
+    if bounds is None:
+        return np.zeros((1, 1, 3), np.uint8), np.zeros((1, 1), np.uint8)
+    (x0, y0, x1, y1), region = bounds
+    sub_valid = region if valid is None else np.minimum(region, valid[y0:y1, x0:x1])
+    return bgr[y0:y1, x0:x1].copy(), sub_valid
+
+
+def color_piece(bgr, valid, polygon):
+    """A lassoed piece of the color photo as BGRA: transparent outside the
+    loop, cropped to the loop's bounds."""
+    sub, sub_valid = color_source(bgr, valid, polygon, margin=0)
+    return color_rgba(sub, sub_valid)
 
 
 def process(flat, mask, s: Settings):
