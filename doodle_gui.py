@@ -1,7 +1,8 @@
 """Doodle Extractor: windowed app.
 
-Open a photo of a drawing. "Extract ink" turns it into a Godot-ready PNG
-(white lines, transparent everywhere else); without it the photo is kept as is.
+Open a photo of a drawing. "Detect lines" turns it into clean lines on a
+background (black on white by default; "Apply Godot" gives white lines on
+transparent); without it the photo is kept as is.
 Crop, rotate, and cut out parts of the photo as separate pieces.
 Drag to move the image, scroll to zoom. "Lasso piece" switches the mouse to
 drawing loops around drawings.
@@ -23,10 +24,11 @@ import doodle_core as core
 APP_NAME = "Doodle Extractor"
 DEFAULT_WHITE = 255         # the app's White slider default (the CLI keeps 160)
 HUG_WHITE = 160             # hugging finds ink as if White were at most this
-FIT_SPECK = 30              # "Crop to the drawing" ignores dots smaller than this (px)
+FIT_SPECK = 30              # fitting to the ink ignores dots smaller than this (px)
+PAPER_EDGE = 7              # find_paper shrinks the page by this much; Crop to paper adds it back
 IMAGE_TYPES = [("Images", "*.jpg *.jpeg *.png *.webp *.bmp *.tif *.tiff"),
                ("All files", "*.*")]
-BACKGROUNDS = ("Light", "Dark", "Checker")
+BACKGROUNDS = ("Transparent", "White", "Black", "Custom…")   # saved into the image too
 THUMB = 96                    # piece thumbnail size (px)
 MAX_ZOOM = 8.0                # 800%: screen px per photo px
 ZOOM_STEP = 1.25
@@ -243,7 +245,7 @@ class DoodleApp:
         self.base = None          # file-name stem for saving
         self.is_piece = False     # True in a piece-editor window
         self.bgr = None           # full-res photo to prepare from (None in piece editors)
-        self.color0 = None        # color layer, unrotated (what's shown without Extract ink)
+        self.color0 = None        # color layer, unrotated (what's shown without line detection)
         self.valid0 = None        # its alpha (None = fully opaque)
         self.rcolor = self.rvalid = None   # ... after photo rotation
         self.color = self.valid = None     # ... cut to the working rect
@@ -269,7 +271,7 @@ class DoodleApp:
         self.crop_fit_saved = False   # saved crop tracks the drawing's ink box
         self.cropping = False     # crop mode active
         self.edit_corners = None  # crop box being edited (original photo coords)
-        self._fit_backup = None   # box to restore when "Crop to the drawing" is unticked
+        self._fit_backup = None   # box to restore when "Crop to paper" is switched off
         self._crop_drag = None
 
         # View: `scale` screen px per photo px; (vx, vy) = photo coords at the
@@ -279,7 +281,10 @@ class DoodleApp:
         self.fit = True
         self._pan = None
 
-        self.tint = (0, 0, 0)     # preview line color (RGB)
+        self.tint = (0, 0, 0)     # line color of detected lines (RGB), saved too
+        self.godot = False        # Apply Godot: white lines on transparent (colors locked)
+        self._godot_saved = None  # (background, line color) to restore when it's turned off
+        self.bg_custom = (128, 128, 128)   # the "Custom…" background color (RGB)
         self._photo = None        # keep Tk images alive
         self._refresh_job = None
         self._resize_job = None
@@ -296,7 +301,7 @@ class DoodleApp:
         self.white = tk.IntVar(value=DEFAULT_WHITE)
         self.min_speck = tk.IntVar(value=0)
         self.pad = tk.IntVar(value=0)    # margin kept around drawings (no longer a slider)
-        self.crop_fit = tk.BooleanVar(value=False)   # "Crop to the drawing" in crop mode
+        self.crop_fit = tk.BooleanVar(value=False)   # "Crop to paper" in crop mode
         self.select_mode = tk.BooleanVar(value=False)  # left-drag draws loops instead of panning
         self.extract = tk.BooleanVar(value=False)      # show/save extracted ink instead of the photo
         self.hug = tk.BooleanVar(value=False)          # snap new loops to the drawing's outline
@@ -310,7 +315,8 @@ class DoodleApp:
         self._smooth_job = None
         self.crop_vars = {k: tk.StringVar(value="0") for k in ("x", "y", "w", "h")}
         self.detect_paper = tk.BooleanVar(value=False)   # every on/off switch starts off
-        self.bg_mode = tk.StringVar(value="Light")
+        self.bg_mode = tk.StringVar(value="White")
+        self._bg_prev = "White"           # to go back to when Custom… is cancelled
         self.zoom_text = tk.StringVar(value="")
         self.angle = tk.DoubleVar(value=0.0)        # photo straighten, degrees clockwise
         if _THEME["dark"] is None:
@@ -368,18 +374,31 @@ class DoodleApp:
             "Save the image, cropped and rotated, as a PNG (Ctrl+S)").pack(side="left",
                                                                            padx=(6, 18))
 
-        ttk.Label(bar, text="Preview background:").pack(side="left")
+        ttk.Label(bar, text="Background:").pack(side="left")
         bg = self.bg_combo = ttk.Combobox(bar, textvariable=self.bg_mode, values=BACKGROUNDS,
-                                          state="readonly", width=8)
-        tip(bg, "Background behind the preview only; saved PNGs stay transparent")
-        bg.pack(side="left", padx=(4, 12))
-        bg.bind("<<ComboboxSelected>>", lambda e: self.schedule_refresh())
-
-        ttk.Label(bar, text="Preview line color:").pack(side="left")
-        self.tint_swatch = tk.Button(bar, width=3, relief="solid", bd=1,
+                                          state="readonly", width=11)
+        tip(bg, "Background of the image, saved too. Transparent shows as a checkerboard")
+        bg.pack(side="left", padx=(4, 0))
+        bg.bind("<<ComboboxSelected>>", lambda e: self.on_background())
+        # Optional color controls after it: the custom background color (while
+        # Custom… is chosen) and the line color (while extraction is applied)
+        colors = ttk.Frame(bar)
+        colors.pack(side="left", padx=(0, 18))
+        self.bg_swatch = tk.Button(colors, width=3, relief="solid", bd=1,
+                                   bg=self._hex(self.bg_custom), command=self.pick_bg_custom)
+        tip(self.bg_swatch, "Pick the custom background color")
+        self.tint_box = ttk.Frame(colors)
+        ttk.Label(self.tint_box, text="Line color:").pack(side="left", padx=(12, 0))
+        self.tint_swatch = tk.Button(self.tint_box, width=3, relief="solid", bd=1,
                                      bg=self._hex(self.tint), command=self.pick_tint)
-        tip(self.tint_swatch, "Color of the lines in the preview only; saved ink is always white")
-        self.tint_swatch.pack(side="left", padx=(4, 18))
+        tip(self.tint_swatch, "Color of the extracted lines, saved too "
+                              "(white suits Godot's Self Modulate)")
+        self.tint_swatch.pack(side="left", padx=(4, 0))
+        self.godot_button = ttk.Button(self.tint_box, text="Apply Godot",
+                                       command=lambda: self.set_godot(not self.godot))
+        tip(self.godot_button, "Godot export: white lines on transparent, ready for Self "
+                               "Modulate; click again to go back to your colors")
+        self.godot_button.pack(side="left", padx=(8, 0))
 
         ttk.Label(bar, text="Zoom:").pack(side="left")
         tip(ttk.Button(bar, text="−", width=3, command=lambda: self.zoom_step(1 / ZOOM_STEP)),
@@ -425,10 +444,10 @@ class DoodleApp:
         side = ttk.Frame(parent, padding=(10, 6))
         side.pack(side="left", fill="y")
         tip = self._tip
-        # Extract ink / Crop / Rotate on one row; each opens its settings below
+        # Detect lines / Crop / Rotate on one row; each opens its settings below
         bar = ttk.Frame(side)
         bar.pack(fill="x")
-        self.extract_button = ttk.Button(bar, text="Extract ink", width=-6,
+        self.extract_button = ttk.Button(bar, text="Detect lines", width=-6,
                                          command=self.toggle_extract_panel)
         tip(self.extract_button, "Show the ink extraction settings; click again to hide them")
         self.crop_button = ttk.Button(bar, text="Crop", width=-6, command=self.toggle_crop)
@@ -488,16 +507,16 @@ class DoodleApp:
         self.rotate_button.state(["pressed"] if on else ["!pressed"])
 
     def _build_extract_section(self, parent):
-        """Ink extraction settings, shown while the Extract ink button is on.
-        Apply extraction turns it on; the rest only shows while it's ticked."""
-        # Highlighted in the "on" color of the Extract ink button, like the piece settings
+        """Line detection settings, shown while the Detect lines button is on.
+        Apply detection turns it on; the rest only shows while it's on."""
+        # Highlighted in the "on" color of the Detect lines button, like the piece settings
         sec = self.extract_section = ttk.Frame(parent, style="Opts.TFrame",
                                                padding=(10, 0, 10, 10))
         self.apply_check = self._tip(
-            ttk.Checkbutton(sec, text="Apply extraction", variable=self.extract,
+            ttk.Checkbutton(sec, text="Apply detection", variable=self.extract,
                             command=lambda: self.set_extract(self.extract.get()),
                             style="Opts.TCheckbutton"),
-            "Turn the drawing into white lines on transparent, ready for Godot")
+            "Turn the drawing's lines into clean lines on the chosen background")
         self.apply_check.pack(anchor="w", pady=(10, 0))
         body = self.extract_body = ttk.Frame(sec, style="Opts.TFrame")
         self.black_scale = self._slider(
@@ -531,9 +550,9 @@ class DoodleApp:
         """The crop settings, shown only while cropping."""
         # Highlighted in the "on" color of the Crop button, like the piece settings
         sec = self.crop_section = ttk.Frame(parent, style="Opts.TFrame", padding=10)
-        self._tip(ttk.Checkbutton(sec, text="Crop to the drawing", variable=self.crop_fit,
+        self._tip(ttk.Checkbutton(sec, text="Crop to paper", variable=self.crop_fit,
                                   command=self.on_crop_fit, style="Opts.TCheckbutton"),
-                  "Snap the box tight to the ink and follow the sliders").grid(
+                  "Snap the box to the edges of the sheet of paper").grid(
             row=0, column=0, columnspan=4, sticky="w", pady=(0, 6))
         self.crop_spins = {}
         for i, (key, label) in enumerate((("x", "X"), ("y", "Y"), ("w", "Width"), ("h", "Height"))):
@@ -742,6 +761,7 @@ class DoodleApp:
         self.list_canvas.configure(bg=p["bg"])
         self.list_inner.configure(bg=p["bg"])
         self.tint_swatch.configure(highlightbackground=p["bg"])
+        self.bg_swatch.configure(highlightbackground=p["bg"])
         for scale in self._scales:
             scale.configure(bg=p["bg"], fg=p["fg"], troughcolor=p["trough"],
                             activebackground=p["active"], highlightbackground=p["bg"])
@@ -851,25 +871,27 @@ class DoodleApp:
         self.schedule_refresh()
 
     def set_extract(self, on, redraw=True):
-        """Apply extraction on: show/save the extracted ink (and its settings).
+        """Apply detection on: show/save the detected lines (and its settings).
         Off: show/save the photo itself (the slider values are kept)."""
         self.extract.set(on)
-        self.extract_button.configure(text="Extract ink ✓" if on else "Extract ink")
-        self.tint_swatch.configure(state="normal" if on else "disabled")
+        self.extract_button.configure(text="Detect lines ✓" if on else "Detect lines")
+        if not on and self.godot:         # Apply Godot only exists while detecting
+            self.set_godot(False)
+        self._layout_colors()
         if on:
             self.extract_body.pack(fill="x", after=self.apply_check)
         else:
             self.extract_body.pack_forget()
         if redraw and self.rflat is not None:
             self.refresh()
-            self.status.set("Extraction on: tune the sliders. Switch Apply extraction off to show "
+            self.status.set("Detection on: tune the sliders. Switch Apply detection off to show "
                             "the photo." if on else "Showing the photo as is.")
 
     def toggle_extract_panel(self):
         self.set_extract_open(not self.extract_section.winfo_manager())
 
     def _close_other_sections(self, keep):
-        """Extract ink, Crop and Rotate: only one has its settings open at a time.
+        """Detect lines, Crop and Rotate: only one has its settings open at a time.
         Closing Crop this way keeps the crop box, like clicking Crop again."""
         if keep != "extract" and self.extract_section.winfo_manager():
             self.set_extract_open(False)
@@ -879,7 +901,7 @@ class DoodleApp:
             self.save_crop()
 
     def set_extract_open(self, on):
-        """Show or hide the Extract ink settings (extraction itself is unchanged)."""
+        """Show or hide the Detect lines settings (detection itself is unchanged)."""
         if on:
             self._close_other_sections("extract")
             self.extract_section.pack(fill="x", pady=(6, 0))
@@ -889,12 +911,71 @@ class DoodleApp:
         self.extract_button.state(["pressed"] if on else ["!pressed"])
 
     def pick_tint(self):
-        rgb, _ = colorchooser.askcolor(color=self._hex(self.tint), title="Preview line color",
+        rgb, _ = colorchooser.askcolor(color=self._hex(self.tint), title="Line color",
                                        parent=self.root)
         if rgb:
             self.tint = tuple(int(c) for c in rgb)
             self.tint_swatch.configure(bg=self._hex(self.tint))
             self.schedule_refresh()
+
+    # ------------------------------------------------------------ background
+
+    def _bg_rgb(self):
+        """The background color saved behind the image (RGB), None = transparent."""
+        return {"Transparent": None, "White": (255, 255, 255),
+                "Black": (0, 0, 0)}.get(self.bg_mode.get(), self.bg_custom)
+
+    def on_background(self):
+        """A background was chosen in the drop-down. Custom… asks for the color."""
+        if self.bg_mode.get() == "Custom…" and not self.pick_bg_custom():
+            self.bg_mode.set(self._bg_prev)        # cancelled: keep the old background
+        self._bg_prev = self.bg_mode.get()
+        self._layout_colors()
+        self.schedule_refresh()
+
+    def pick_bg_custom(self):
+        """Ask for the custom background color. Returns False if cancelled."""
+        rgb, _ = colorchooser.askcolor(color=self._hex(self.bg_custom),
+                                       title="Background color", parent=self.root)
+        if not rgb:
+            return False
+        self.bg_custom = tuple(int(c) for c in rgb)
+        self.bg_swatch.configure(bg=self._hex(self.bg_custom))
+        self.schedule_refresh()
+        return True
+
+    def set_godot(self, on):
+        """Apply Godot: white lines on a transparent background, for Godot's Self
+        Modulate. While on, Background and Line color are locked; turning it off
+        brings back what was picked before."""
+        if on == self.godot:
+            return
+        self.godot = on
+        if on:
+            self._godot_saved = (self.bg_mode.get(), self.tint)
+            self.bg_mode.set("Transparent")
+            self.tint = (255, 255, 255)
+        elif self._godot_saved:
+            mode, self.tint = self._godot_saved
+            self.bg_mode.set(mode)
+            self._godot_saved = None
+        self._bg_prev = self.bg_mode.get()
+        self.bg_combo.state(["disabled"] if on else ["!disabled"])
+        self.tint_swatch.configure(bg=self._hex(self.tint), state="disabled" if on else "normal")
+        self.bg_swatch.configure(state="disabled" if on else "normal")
+        self.godot_button.state(["pressed"] if on else ["!pressed"])
+        self._layout_colors()
+        self.schedule_refresh()
+
+    def _layout_colors(self):
+        """Show the custom-background swatch only for Custom…, and the line color
+        only while extraction is applied (it only colors extracted lines)."""
+        self.bg_swatch.pack_forget()
+        self.tint_box.pack_forget()
+        if self.bg_mode.get() == "Custom…":
+            self.bg_swatch.pack(side="left", padx=(4, 0))
+        if self.extract.get():
+            self.tint_box.pack(side="left")
 
     # ---------------------------------------------------------- open / save
 
@@ -1053,14 +1134,18 @@ class DoodleApp:
 
     def _image_rgba(self):
         if self.extract.get():
-            return core.to_rgba(self.alpha)
-        return core.color_rgba(self.color, self.valid)
+            rgba = core.to_rgba(self.alpha, self.tint)
+        else:
+            rgba = core.color_rgba(self.color, self.valid)
+        return core.apply_background(rgba, self._bg_rgb())
 
     def _piece_rgba(self, i):
         poly = self.piece_poly(i)
         if self.extract.get():
-            return core.to_rgba(core.cut_piece(self.alpha, poly, self.pad.get()))
-        return core.color_piece(self.color, self.valid, poly)
+            rgba = core.to_rgba(core.cut_piece(self.alpha, poly, self.pad.get()), self.tint)
+        else:
+            rgba = core.color_piece(self.color, self.valid, poly)
+        return core.apply_background(rgba, self._bg_rgb())
 
     def _write(self, p, make_rgba):
         p = Path(p)
@@ -1121,9 +1206,19 @@ class DoodleApp:
         editor = DoodleApp(win)
         x, y = self.root.winfo_rootx(), self.root.winfo_rooty()
         win.geometry(f"1350x800+{x + 40}+{max(y - 10, 0)}")
+        # Same line color and background as here (they're saved into the image);
+        # with Apply Godot on, the colors it would restore, then Godot on top
+        mode, tint = self._godot_saved if self.godot else (self.bg_mode.get(), self.tint)
+        editor.tint, editor.bg_custom = tint, self.bg_custom
+        editor.bg_mode.set(mode)
+        editor._bg_prev = mode
+        editor.tint_swatch.configure(bg=self._hex(tint))
+        editor.bg_swatch.configure(bg=self._hex(self.bg_custom))
         editor.load_prepared(flat, mask, self.path, self._piece_name(i)[:-4],
                              self.settings(), f"piece {i + 1}",
                              color=color, valid=valid, extract=self.extract.get())
+        if self.godot:
+            editor.set_godot(True)
         return editor
 
     def delete_piece(self, i):
@@ -1606,8 +1701,8 @@ class DoodleApp:
         if self.rflat is None:
             return
         self.alpha_full = core.finish_alpha(self.rflat, self.rmask, self.settings())
-        if self.cropping and self.crop_fit.get():   # box follows the drawing
-            self._set_edit_rect(self._ink_rect())
+        if self.cropping and self.crop_fit.get():   # box follows the paper (or ink)
+            self._set_edit_rect(self._fit_rect())
         self._set_work_rect(self._target_rect())
         self._update_rows()
         self.render()
@@ -1620,19 +1715,37 @@ class DoodleApp:
         """The drawing's bounding box plus padding (the whole image if empty)."""
         return core.crop_box(self._drawing_alpha(), self.pad.get()) or self._full_rect()
 
+    def _fit_rect(self):
+        """Where "Crop to paper" puts the box: the sheet of paper in a photo; in a
+        piece editor (already one piece on plain paper) the piece's ink."""
+        return self._ink_rect() if self.bgr is None else self._paper_rect()
+
+    def _paper_rect(self):
+        """The detected sheet of paper's box (the whole image if there's no clear
+        sheet), whatever the Detect paper switch says."""
+        mask = self._paper_prepared()[1]
+        if mask is None:
+            self.status.set("No separate page found: Crop to paper uses the whole image.")
+            return self._full_rect()
+        return core.crop_box(mask, PAPER_EDGE) or self._full_rect()
+
+    def _paper_prepared(self):
+        """The photo prepared WITH paper detection, rotated like the view:
+        (flat, mask). The shown one when Detect paper is on (or in an editor)."""
+        if self.bgr is None or self.detect_paper.get():
+            return self.rflat, self.rmask
+        if self._fit_prep is None:
+            self._fit_prep = core.prepare(self.bgr, True)
+        key = (self.quarter, float(self.angle.get()))
+        if self._fit_rot is None or self._fit_rot[0] != key:
+            self._fit_rot = (key, *core.rotate_prepared(*self._fit_prep, *key))
+        return self._fit_rot[1:]
+
     def _drawing_alpha(self):
-        """The ink that "Crop to the drawing" looks for, full rotated size. Unlike
-        the shown result it always ignores the background around the page (even
-        with Detect paper off), caps White like hugging does (so a faint grid
-        isn't drawing) and drops dust, so the box fits the drawing itself."""
-        flat, mask = self.rflat, self.rmask
-        if self.bgr is not None and not self.detect_paper.get():
-            if self._fit_prep is None:          # the photo prepared with paper detection
-                self._fit_prep = core.prepare(self.bgr, True)
-            key = (self.quarter, float(self.angle.get()))
-            if self._fit_rot is None or self._fit_rot[0] != key:
-                self._fit_rot = (key, *core.rotate_prepared(*self._fit_prep, *key))
-            flat, mask = self._fit_rot[1:]
+        """The ink fitting looks for (piece editors start trimmed to it), full
+        rotated size. It ignores the background around the page, caps White like
+        hugging does (so a faint grid isn't drawing) and drops dust."""
+        flat, mask = self._paper_prepared()
         s = self.settings()
         alpha = core.make_alpha(flat, mask, s.black, max(min(s.white, HUG_WHITE), s.black + 1))
         return core.remove_specks(alpha, max(s.min_speck, FIT_SPECK))
@@ -1642,7 +1755,7 @@ class DoodleApp:
         if self.cropping:
             return self._full_rect()
         if self.crop_fit_saved:
-            return self._ink_rect()
+            return self._fit_rect()
         if self.crop_corners is not None:
             h, w = self.rflat.shape
             return core.rect_from_corners(self.Rrot, self.crop_corners, (w, h))
@@ -1693,7 +1806,7 @@ class DoodleApp:
         if self.crop_fit_saved:
             self.crop_fit.set(True)
             self._fit_backup = self._corners(full)
-            self.edit_corners = self._corners(self._ink_rect())
+            self.edit_corners = self._corners(self._fit_rect())
         else:
             self.crop_fit.set(False)
             self._fit_backup = None
@@ -1717,7 +1830,7 @@ class DoodleApp:
             self.start_crop()
 
     def reset_crop(self):
-        """Put the crop box back at the image edges (and untick "to the drawing")."""
+        """Put the crop box back at the image edges (and switch "Crop to paper" off)."""
         if not self.cropping:
             return
         self.set_crop_box(*self._full_rect())
@@ -1738,7 +1851,8 @@ class DoodleApp:
         self._leave_crop_mode()
         self.refresh()
         if self.crop_fit_saved:
-            self.status.set("Cropped to the drawing (follows the sliders).")
+            self.status.set("Cropped to the drawing." if self.bgr is None
+                            else "Cropped to the paper.")
         elif self.crop_corners is None:
             self.status.set("No crop: using the whole image.")
         else:
@@ -1770,7 +1884,7 @@ class DoodleApp:
         x, y = min(max(x, 0), W - 1), min(max(y, 0), H - 1)
         w, h = min(max(w, 1), W - x), min(max(h, 1), H - y)
         self.edit_corners = self._corners((x, y, w, h))
-        if user and self.crop_fit.get():    # hand edits replace "to the drawing"
+        if user and self.crop_fit.get():    # hand edits replace "Crop to paper"
             self.crop_fit.set(False)
             self._fit_backup = None
         self._sync_spins()
@@ -1780,7 +1894,7 @@ class DoodleApp:
             return
         if self.crop_fit.get():
             self._fit_backup = self.edit_corners.copy()
-            self._set_edit_rect(self._ink_rect())
+            self._set_edit_rect(self._fit_rect())
         elif self._fit_backup is not None:
             self.edit_corners, self._fit_backup = self._fit_backup, None
             self._sync_spins()
@@ -1949,20 +2063,21 @@ class DoodleApp:
         if self.cropping:
             self.save_crop()
 
-    def _background(self, w, h, mode=None, cell=12):
-        mode = mode or self.bg_mode.get()
-        key = (mode, w, h, cell)
+    def _background(self, w, h, cell=12):
+        """The chosen background as an RGB float image: a checkerboard for
+        Transparent, else the solid color that saving puts behind the image."""
+        rgb = self._bg_rgb()
+        key = (rgb, w, h, cell)
         if key not in self._bg_cache:
             if len(self._bg_cache) > 50:
                 self._bg_cache.clear()
-            if mode == "Dark":
-                bg = np.full((h, w, 3), 40, np.float32)
-            elif mode == "Checker":
+            if rgb is None:
                 yy, xx = np.indices((h, w))
                 cells = ((yy // cell + xx // cell) % 2).astype(np.float32)
                 bg = np.repeat((150 + 60 * cells)[:, :, None], 3, axis=2)
             else:
-                bg = np.full((h, w, 3), 245, np.float32)
+                bg = np.empty((h, w, 3), np.float32)
+                bg[:] = rgb
             self._bg_cache[key] = bg
         return self._bg_cache[key]
 
@@ -1983,13 +2098,12 @@ class DoodleApp:
         return out.astype(np.uint8)
 
     def _preview_rgb(self, bgra):
-        """A saved BGRA image as a piece thumbnail: always over a fine checkerboard,
-        so transparent parts are easy to see."""
+        """A saved BGRA image as a piece thumbnail. It already has the line color
+        and background in it; a (fine) checkerboard shows only where it's
+        transparent."""
         h, w = bgra.shape[:2]
-        bg = self._background(w, h, mode="Checker", cell=6)
-        if self.extract.get():
-            return self._composite(bgra[:, :, 3], bg)
-        return self._composite_color(bgra[:, :, :3], bgra[:, :, 3], bg)
+        return self._composite_color(bgra[:, :, :3], bgra[:, :, 3],
+                                     self._background(w, h, cell=6))
 
     def _mode_banner_text(self):
         """What the banner over the preview says, or None when no mode is on."""

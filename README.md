@@ -1,8 +1,9 @@
 # Doodle Extractor
 
-Crops, rotates and cuts drawings out of photos. **Extract ink** turns them into Godot-ready PNGs:
-**white lines, transparent everywhere else**. In Godot, put one on a `Sprite2D` and set
-**Self Modulate** to recolor the lines.
+Crops, rotates and cuts drawings out of photos. **Detect lines** turns them into clean lines:
+**black on white** by default, or any line color and background you pick. **Apply Godot** gives
+Godot-ready PNGs: **white lines, transparent everywhere else**. In Godot, put one on a `Sprite2D`
+and set **Self Modulate** to recolor the lines.
 
 ## Using the app
 Run `dist\DoodleExtractor.exe` (or `python doodle_gui.py`). You can also drag a photo onto the exe.
@@ -10,25 +11,35 @@ Run `dist\DoodleExtractor.exe` (or `python doodle_gui.py`). You can also drag a 
 1. **Open…** (Ctrl+O): pick the photo.
 2. By default the photo is shown and saved **as is** (rotated and cropped if you did). Every
    on/off switch in the app starts off.
-   Click **Extract ink** to open its settings, then switch on **Apply extraction**. The other settings
-   appear once it's on, and the button shows **Extract ink ✓** while extraction is applied:
+   Click **Detect lines** to open its settings, then switch on **Apply detection**. The other
+   settings appear once it's on, and the button shows **Detect lines ✓** while detection is applied:
    - **Black**: ink this dark or darker is fully solid.
    - **White**: anything this light or lighter is transparent. Lower it if the grid shows.
    - **Remove specks**: erases dots smaller than N pixels.
    - **Detect paper**: ignores the background around the page. Switch it on for photos of a page
      on a desk or table.
-   - The preview background and line color are for viewing only. The saved ink is always white.
+   - **Line color** (in the toolbar, shown while detection is applied) is the color of the saved
+     lines; black by default.
+   - **Apply Godot** (next to Line color) switches to white lines on a transparent background, for
+     Godot's Self Modulate. While it's on, Background and Line color are locked; click it again to
+     get your own colors back. Switching detection off turns it off too.
 
-   Switch **Apply extraction** off to go back to the photo; your slider values are kept for next time.
-   Clicking **Extract ink** again only hides the settings, so extraction stays on (✓).
+   **Background** (in the toolbar) is saved too: **White** (the default), **Black**, **Transparent**
+   (shown as a checkerboard) or **Custom…** (pick any color; the swatch next to it changes it). A
+   solid background makes the saved PNG opaque. It applies to the photo as well, filling corners
+   exposed by straightening and the area outside a piece's loop.
+
+   Switch **Apply detection** off to go back to the photo; your slider values are kept for next
+   time. Clicking **Detect lines** again only hides the settings, so detection stays on (✓).
 3. **Save PNG…** (Ctrl+S): choose where to save the image (the cropped area, if you cropped).
 
 **Crop** opens the crop settings and shows a crop box over the photo, starting at the edges.
 The button stays pressed while the section is open:
 - Drag its edges or corners to resize it, or drag inside to move it. You can also type or step
   the **X / Y / Width / Height** values.
-- **Crop to the drawing** snaps the box tight to the ink and keeps following it as you
-  change the sliders. Switching it off puts the box back where it was.
+- **Crop to paper** snaps the box to the edges of the sheet of paper in the photo (whether or not
+  Detect paper is on). If there's no clear sheet it uses the whole image. Switching it off puts
+  the box back where it was.
 - **Save crop** (Enter) applies it. Clicking **Crop** again (or Esc) also closes the section
   and keeps your changes.
 - **Reset** puts the box back at the image edges (no crop).
@@ -39,7 +50,7 @@ The button stays pressed while the section is open:
 (−45° to +45°) for a slight tilt. Corners exposed by straightening are transparent. Pieces stay
 attached to their drawings. Click **Rotate** again to hide the settings; the rotation stays.
 
-**Extract ink**, **Crop** and **Rotate** sit side by side at the top left. Each opens its
+**Detect lines**, **Crop** and **Rotate** sit side by side at the top left. Each opens its
 settings under the row, highlighted in the same gray as the pressed button. Only one is open at a
 time: opening another closes it (closing Crop this way keeps your crop, like clicking Crop again).
 
@@ -75,12 +86,12 @@ you can loop around the next one.
 - **Smoothing** rounds the hugged outline out; higher is rounder. It only
   ever grows the outline, so no ink is cut off. Moving it also re-smooths the selected piece, so you
   can loop first and tune after. Selecting a piece shows the smoothing it was made with.
-- Without Extract ink a piece is the photo inside its loop (transparent outside it). With it, the
+- Without line detection a piece is the photo inside its loop (transparent outside it). With it, the
   piece is the extracted ink, cropped tight to the drawing.
 - **Save…** on a row saves that piece; **Save all…** writes every piece to a folder as
   `<photo>_piece1.png`, `<photo>_piece2.png`, …
 - **Open…** opens the piece in a new window of its own: full-size preview, zoom, rotation and
-  its own settings (starting from the main window's, including whether Extract ink is on). **Save PNG** there saves the
+  its own settings (starting from the main window's, including whether line detection and Apply Godot are on). **Save PNG** there saves the
   piece. You can open several at once.
 - **+** / **−** (under a piece's thumbnail) add to or cut from that piece's outline. With
   **+** on, drag a loop to join it to the piece (hugged to the drawing when Hug the drawing
@@ -92,7 +103,8 @@ you can loop around the next one.
   **Esc**) to go back to moving the image; Esc while drawing cancels just that loop.
 - While a mode is on (Auto select piece, Lasso piece, + / −, Crop), a dark banner across the top of the
   preview says which one and how to stop it.
-- Thumbnails show transparent parts as a checkerboard, whatever the preview background is.
+- Thumbnails show each piece as it will be saved, on the chosen background (a checkerboard where
+  it's transparent).
 - Click a row to select it (highlighted orange on the preview). **Delete** removes the selected piece.
 
 ## Command line

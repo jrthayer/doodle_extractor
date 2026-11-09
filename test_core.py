@@ -95,6 +95,17 @@ def test_pieces():
 
     # Loop running off the image edge doesn't crash
     core.process_piece(flat, mask, s, [(-50, -50), (300, -50), (300, 300), (-50, 300)])
+
+    # Line color and background: white on transparent by default
+    a = np.array([[0, 128, 255]], np.uint8)
+    white = core.to_rgba(a)
+    assert (white[:, :, :3] == 255).all() and (white[:, :, 3] == a).all()
+    red = core.to_rgba(a, (255, 0, 0))
+    assert red[0, 0].tolist()[:3] == [0, 0, 255], "BGR order"
+    assert core.apply_background(red, None) is red, "transparent: unchanged"
+    on_black = core.apply_background(red, (0, 0, 0))
+    assert on_black[:, :, 3].tolist() == [[255, 255, 255]]
+    assert on_black[0, 0, 2] == 0 and on_black[0, 2, 2] == 255 and 120 <= on_black[0, 1, 2] <= 130
     print("pieces ok")
 
 
@@ -128,6 +139,7 @@ def test_gui():
         assert app.white.get() == 255, "the app starts with White at 255"
         app.white.set(160)             # these tests were written for White 160
         app.set_extract(True)          # these tests check extracted ink
+        app.set_godot(True)            # ...as white ink on transparent
         app.detect_paper.set(True)     # ...and were written with paper detection on
         app.reprepare()
         root.update()
@@ -135,7 +147,7 @@ def test_gui():
         app.min_speck.set(50)
         app.on_white()
         app.refresh()
-        for mode in ("Dark", "Checker", "Light"):
+        for mode in ("Black", "White", "Custom…", "Transparent"):   # preview with each
             app.bg_mode.set(mode)
             app.refresh()
 
@@ -261,6 +273,7 @@ def test_rotation_gui():
         app.open_path(src)
         app.white.set(160)             # these tests were written for White 160
         app.set_extract(True)          # these tests check extracted ink
+        app.set_godot(True)            # ...as white ink on transparent
         app.detect_paper.set(True)     # ...and were written with paper detection on
         app.reprepare()
         root.update()
@@ -316,6 +329,7 @@ def test_edit_piece_window():
         app.open_path(src)
         app.white.set(160)             # these tests were written for White 160
         app.set_extract(True)          # these tests check extracted ink
+        app.set_godot(True)            # ...as white ink on transparent
         app.detect_paper.set(True)     # ...and were written with paper detection on
         app.reprepare()
         app.white.set(150)
@@ -390,6 +404,7 @@ def test_crop_tool():
         app.open_path(src)
         app.white.set(160)             # these tests were written for White 160
         app.set_extract(True)          # these tests check extracted ink
+        app.set_godot(True)            # ...as white ink on transparent
         app.detect_paper.set(True)     # ...and were written with paper detection on
         app.reprepare()
         root.update()
@@ -429,15 +444,14 @@ def test_crop_tool():
         assert app.edit_rect()[1] + app.edit_rect()[3] == H
         assert app._crop_hit(*app.to_canvas(1150, 20)) is None, "outside the box"
 
-        # "Crop to the drawing" snaps to the ink box; unticking restores the box
+        # "Crop to paper" snaps to the sheet's edges; switching it off restores the box
         before = app.edit_rect()
         app.crop_fit.set(True)
         app.on_crop_fit()
-        assert app.edit_rect() == core.crop_box(app._drawing_alpha(), app.pad.get())
-        app.pad.set(30)
-        app.refresh()
-        assert app.edit_rect() == core.crop_box(app._drawing_alpha(), 30), "box tracks the ink"
-        app.pad.set(0)
+        assert app.edit_rect() == app._paper_rect()
+        px, py, pw, ph = app._paper_rect()          # the fake sheet: (100, 80)-(1100, 820)
+        assert abs(px - 100) <= 3 and abs(py - 80) <= 3 and abs(pw - 1001) <= 6 \
+            and abs(ph - 741) <= 6, app._paper_rect()
         app.crop_fit.set(False)
         app.on_crop_fit()
         assert app.edit_rect() == before
@@ -514,10 +528,11 @@ def test_crop_tool():
         app.crop_fit.set(True)
         app.on_crop_fit()
         app.save_crop()
-        assert app.crop_fit_saved and app.work_rect == core.crop_box(app._drawing_alpha(), 0)
-        app.pad.set(40)
+        assert app.crop_fit_saved and app.work_rect == app._paper_rect()
+        app.white.set(200)                    # the sliders don't move the paper
         app.refresh()
-        assert app.work_rect == core.crop_box(app._drawing_alpha(), 40)
+        assert app.work_rect == app._paper_rect()
+        app.white.set(160)
 
         # Saving the full box means no crop
         app.start_crop()
@@ -530,14 +545,15 @@ def test_crop_tool():
     print("crop tool ok")
 
 
-def test_crop_to_drawing_defaults():
-    """With the app's defaults (Detect paper off, White 255, no extraction),
-    "Crop to the drawing" still snaps to the drawing, not the whole photo."""
+def test_crop_to_paper():
+    """"Crop to paper" snaps the box to the sheet of paper's edges, with the
+    app's defaults (Detect paper off, White 255, no detection) and otherwise;
+    with no clear sheet it uses the whole image."""
     import tkinter as tk
     from doodle_gui import DoodleApp
 
-    bgr, ink = fake_photo()[:2]
-    x, y, w, h = cv2.boundingRect(cv2.findNonZero(ink))    # the drawing's real box
+    bgr, ink, grid, specks, paper = fake_photo()
+    x, y, w, h = cv2.boundingRect(cv2.findNonZero(paper))    # the sheet's real box
     with tempfile.TemporaryDirectory() as d:
         src = Path(d) / "photo.png"
         core.save_png(src, bgr)
@@ -558,17 +574,25 @@ def test_crop_to_drawing_defaults():
             app.save_crop()
             return box
 
-        for setup in ("defaults", "paper on", "extract on"):
+        for setup in ("defaults", "paper on", "detection on"):
             if setup == "paper on":
                 app.detect_paper.set(True)
                 app.reprepare()
-            elif setup == "extract on":
+            elif setup == "detection on":
                 app.set_extract(True)
             bx, by, bw, bh = fitted()
-            assert (abs(bx - x) <= 4 and abs(by - y) <= 4 and abs(bw - w) <= 8
-                    and abs(bh - h) <= 8), (setup, (bx, by, bw, bh), (x, y, w, h))
+            assert (abs(bx - x) <= 3 and abs(by - y) <= 3 and abs(bw - w) <= 6
+                    and abs(bh - h) <= 6), (setup, (bx, by, bw, bh), (x, y, w, h))
+
+        # No separate sheet (a drawing on a plain white photo): the whole image
+        plain = np.full((400, 600, 3), 250, np.uint8)
+        cv2.line(plain, (100, 100), (500, 300), (20, 20, 20), 6)
+        src2 = Path(d) / "plain.png"
+        core.save_png(src2, plain)
+        app.open_path(src2)
+        assert fitted() == (0, 0, 600, 400)
         root.destroy()
-    print("crop to drawing ok")
+    print("crop to paper ok")
 
 
 def test_mouse_modes():
@@ -590,6 +614,7 @@ def test_mouse_modes():
         app.open_path(src)
         app.white.set(160)             # these tests were written for White 160
         app.set_extract(True)          # these tests check extracted ink
+        app.set_godot(True)            # ...as white ink on transparent
         app.detect_paper.set(True)     # ...and were written with paper detection on
         app.reprepare()
         root.update()
@@ -671,12 +696,16 @@ def test_extract_toggle():
         root.update()
         out = Path(d) / "out.png"
 
-        # Default: no extraction. Section hidden, button up, photo saved as is
+        # Default: no detection. Section hidden, button up, photo saved as is
         assert not app.extract.get() and not app.extract_section.winfo_manager()
         assert "pressed" not in app.extract_button.state()
-        assert app.extract_button.cget("text") == "Extract ink"
+        assert app.extract_button.cget("text") == "Detect lines"
+        assert app.apply_check.cget("text") == "Apply detection"
         assert "ignore background" in app.paper_check.cget("text")
-        assert str(app.tint_swatch.cget("state")) == "disabled"
+        assert not app.tint_box.winfo_manager(), "line color only shows while detecting"
+        assert app.bg_mode.get() == "White" and app.tint == (0, 0, 0), "black on white"
+        app.bg_mode.set("Transparent")      # the photo checks below look at its alpha
+        app.on_background()
         assert app.save_path(out)
         saved = read(out)
         assert saved.shape == (900, 1200, 4) and (saved[:, :, 3] == 255).all()
@@ -690,7 +719,7 @@ def test_extract_toggle():
         assert piece[190, 190, 3] == 255 and piece[0, 0, 3] == 0
         assert np.array_equal(piece[190, 190, :3], bgr[400, 400])
 
-        # The button only opens the settings: just "Apply extraction" until it's ticked
+        # The button only opens the settings: just "Apply detection" until it's on
         app.white.set(150)
         app.extract_button.invoke()
         root.update()
@@ -698,30 +727,50 @@ def test_extract_toggle():
         assert not app.extract.get() and not app.extract_body.winfo_manager()
         assert app.save_path(out) and np.array_equal(read(out)[:, :, :3], bgr), "still the photo"
 
-        # Apply extraction: the rest of the settings show, the button gets a ✓, white ink saved
+        # Apply detection: the rest of the settings show, the button gets a ✓, and
+        # the lines are saved in the line color (black)
         app.apply_check.invoke()
         root.update()
         assert app.extract.get() and app.extract_body.winfo_manager()
-        assert app.extract_button.cget("text") == "Extract ink ✓"
+        assert app.extract_button.cget("text") == "Detect lines ✓"
+        assert app.tint_box.winfo_manager() and app.godot_button.winfo_manager()
+        flat, mask = core.prepare(bgr, app.detect_paper.get())
+        want = core.process(flat, mask, app.settings())
         assert app.save_path(out)
         ink = read(out)
-        assert (ink[:, :, :3] == 255).all() and ink[:, :, 3].min() == 0
-        flat, mask = core.prepare(bgr, app.detect_paper.get())
-        assert np.array_equal(ink, core.process(flat, mask, app.settings()))
+        assert (ink[:, :, :3] == 0).all() and np.array_equal(ink[:, :, 3], want[:, :, 3])
+
+        # Apply Godot: white lines on transparent, colors locked; off restores them
+        app.bg_mode.set("Black")
+        app.on_background()
+        app.godot_button.invoke()
+        assert app.godot and "pressed" in app.godot_button.state()
+        assert app.bg_mode.get() == "Transparent" and app.tint == (255, 255, 255)
+        assert "disabled" in app.bg_combo.state()
+        assert str(app.tint_swatch.cget("state")) == "disabled"
+        assert app.save_path(out) and np.array_equal(read(out), want), "Godot-ready ink"
+        app.godot_button.invoke()
+        assert not app.godot and app.bg_mode.get() == "Black" and app.tint == (0, 0, 0)
+        assert "disabled" not in app.bg_combo.state()
+        app.bg_mode.set("Transparent")
+        app.on_background()
+        app.set_godot(True)
 
         # Closing the settings keeps extraction on
         app.extract_button.invoke()
         root.update()
         assert not app.extract_section.winfo_manager() and app.extract_holder.winfo_height() <= 1
-        assert app.extract.get() and app.extract_button.cget("text") == "Extract ink ✓"
+        assert app.extract.get() and app.extract_button.cget("text") == "Detect lines ✓"
         assert app.save_path(out) and (read(out)[:, :, :3] == 255).all()
 
-        # Unticking Apply extraction: settings fold away, photo is back, slider values kept
+        # Apply detection off: settings fold away, photo is back, slider values kept,
+        # and Apply Godot goes off with it (colors restored)
         app.extract_button.invoke()
         app.apply_check.invoke()
         root.update()
         assert not app.extract.get() and not app.extract_body.winfo_manager()
-        assert app.extract_button.cget("text") == "Extract ink"
+        assert app.extract_button.cget("text") == "Detect lines"
+        assert not app.godot and app.tint == (0, 0, 0) and app.bg_mode.get() == "Transparent"
         app.extract_button.invoke()
         assert app.white.get() == 150, "slider value remembered"
         assert app.save_path(out) and np.array_equal(read(out)[:, :, :3], bgr)
@@ -755,12 +804,16 @@ def test_extract_toggle():
         ed = read(out)
         assert ed[:, :, 3].max() == 255 and ed[0, 0, 3] == 0, "transparent outside the loop"
         editor.set_extract(True)
-        assert editor.save_path(out) and (read(out)[:, :, :3] == 255).all()
+        assert editor.save_path(out) and (read(out)[:, :, :3] == 0).all(), "black lines"
         editor.root.destroy()
         app.set_extract(True)
+        app.set_godot(True)
         editor = app.edit_piece(0)
-        assert editor.extract.get() and editor.extract_button.cget("text") == "Extract ink ✓"
+        assert editor.extract.get() and editor.extract_button.cget("text") == "Detect lines ✓"
         assert not editor.extract_section.winfo_manager(), "its settings start closed"
+        assert editor.godot and editor.tint == (255, 255, 255)
+        editor.set_godot(False)                 # ...and restores the main window's colors
+        assert editor.tint == (0, 0, 0) and editor.bg_mode.get() == "Transparent"
         editor.root.destroy()
         root.destroy()
     print("extract toggle ok")
@@ -784,6 +837,7 @@ def test_preview_keeps_thin_lines():
         app.open_path(src)
         app.white.set(160)             # these tests were written for White 160
         app.set_extract(True)          # these tests check extracted ink
+        app.set_godot(True)            # ...as white ink on transparent
         app.detect_paper.set(True)     # ...and were written with paper detection on
         app.reprepare()
         root.update()
@@ -1212,12 +1266,51 @@ def test_piece_add_cut_gui():
         assert texts(app._rows[0][6]) == ["+", "−"]
         assert texts(app._rows[0][4]) == ["Open…", "Save…", "✕ Remove"]
 
-        # Thumbnails sit on a checkerboard even with the Light preview background
-        app.bg_mode.set("Light")
+        # Thumbnails match the background: a checkerboard where it's transparent...
+        app.bg_mode.set("Transparent")
         rgba = app._piece_rgba(0)
         thumb = app._preview_rgb(rgba)
         clear = rgba[:, :, 3] == 0
         assert set(np.unique(thumb[clear])) <= {150, 210} and len(np.unique(thumb[clear])) == 2
+        # ...and the background and line color are saved into the image
+        app.bg_mode.set("Black")
+        app.tint = (255, 0, 0)
+        rgba = app._piece_rgba(0)
+        assert (rgba[:, :, 3] == 255).all(), "a solid background makes it opaque"
+        assert (rgba[clear][:, :3] == 0).all(), "black where there's no ink"
+        solid = cv2.erode((~clear).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+        ink_px = rgba[solid & (app._piece_rgba(0)[:, :, 2] > 200)]
+        assert len(ink_px) and (ink_px[:, 0] < 60).all(), "red lines (saved as BGR)"
+        thumb = app._preview_rgb(rgba)
+        assert (thumb[clear] == 0).all(), "the thumbnail shows the black background"
+        app.bg_mode.set("White")                        # the photo gets it too
+        app.set_extract(False)
+        photo = app._piece_rgba(0)
+        assert (photo[:, :, 3] == 255).all() and (photo[0, 0, :3] == 255).all()
+        app.set_extract(True)
+        # Custom…: OK picks the color, Cancel goes back to the previous background
+        import doodle_gui
+        answers = iter([((10, 200, 30), "#0ac81e"), (None, None)])
+        real = doodle_gui.colorchooser.askcolor
+        doodle_gui.colorchooser.askcolor = lambda **kw: next(answers)
+        try:
+            app.bg_mode.set("Custom…")
+            app.on_background()
+            assert app.bg_custom == (10, 200, 30) and app._bg_rgb() == (10, 200, 30)
+            assert app.bg_swatch.winfo_manager()
+            app.bg_mode.set("Black")
+            app.on_background()
+            app.bg_mode.set("Custom…")
+            app.on_background()                         # cancelled
+            assert app.bg_mode.get() == "Black" and not app.bg_swatch.winfo_manager()
+        finally:
+            doodle_gui.colorchooser.askcolor = real
+        editor = app.edit_piece(0)                      # editors save the same way
+        assert editor.tint == (255, 0, 0) and editor.bg_mode.get() == "Black"
+        editor.root.destroy()
+        app.bg_mode.set("Transparent")
+        app.on_background()
+        app.tint = (255, 255, 255)
 
         # Banner over the preview names the mode
         banner = lambda: app.canvas.find_withtag("banner")
@@ -1431,7 +1524,7 @@ if __name__ == "__main__":
     test_rotation_gui()
     test_edit_piece_window()
     test_crop_tool()
-    test_crop_to_drawing_defaults()
+    test_crop_to_paper()
     test_mouse_modes()
     test_extract_toggle()
     test_theme()

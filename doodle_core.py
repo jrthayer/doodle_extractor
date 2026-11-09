@@ -237,12 +237,27 @@ def crop_box(alpha, pad):
     return x0, y0, x1 - x0, y1 - y0
 
 
-def to_rgba(alpha):
-    """White everywhere, with `alpha` as the transparency."""
+def to_rgba(alpha, color=(255, 255, 255)):
+    """The line `color` (RGB, white by default) everywhere, with `alpha` as the
+    transparency. Returned as BGRA, like everything saved."""
     h, w = alpha.shape
-    rgba = np.full((h, w, 4), 255, dtype=np.uint8)
+    rgba = np.empty((h, w, 4), dtype=np.uint8)
+    rgba[:, :, :3] = color[::-1]
     rgba[:, :, 3] = alpha
     return rgba
+
+
+def apply_background(bgra, rgb):
+    """Put a BGRA image on a solid background color (RGB); the result is opaque.
+    `rgb` None means a transparent background: the image is returned as is."""
+    if rgb is None:
+        return bgra
+    a = bgra[:, :, 3:4].astype(np.float32) / 255
+    bg = np.array(rgb[::-1], np.float32)
+    out = np.empty_like(bgra)
+    out[:, :, :3] = np.round(bgra[:, :, :3] * a + bg * (1 - a)).astype(np.uint8)
+    out[:, :, 3] = 255
+    return out
 
 
 def finish_alpha(flat, mask, s: Settings):
