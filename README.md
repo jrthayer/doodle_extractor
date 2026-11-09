@@ -9,14 +9,16 @@ Run `dist\DoodleExtractor.exe` (or `python doodle_gui.py`). You can also drag a 
 
 1. **Open…** (Ctrl+O): pick the photo.
 2. By default the photo is shown and saved **as is** (rotated and cropped if you did).
-   Click **Extract ink** to turn on ink extraction. The button stays pressed and its settings appear:
+   Click **Extract ink** to open its settings, then tick **Apply extraction**. The other settings
+   appear once it's ticked, and the button shows **Extract ink ✓** while extraction is applied:
    - **Black**: ink this dark or darker is fully solid.
    - **White**: anything this light or lighter is transparent. Lower it if the grid shows.
    - **Remove specks**: erases dots smaller than N pixels.
-   - **Detect paper**: ignores the desk around the page.
+   - **Detect paper**: ignores the background around the page.
    - The preview background and line color are for viewing only. The saved ink is always white.
 
-   Click **Extract ink** again to go back to the photo. Your slider values are kept for next time.
+   Untick **Apply extraction** to go back to the photo; your slider values are kept for next time.
+   Clicking **Extract ink** again only hides the settings, so extraction stays on (✓).
 3. **Save PNG…** (Ctrl+S): choose where to save the image (the cropped area, if you cropped).
 
 **Crop** opens the crop settings and shows a crop box over the photo, starting at the edges.
@@ -31,8 +33,13 @@ The button stays pressed while the section is open:
 - Opening **Crop** again later shows the box where you left it, so you can widen it back out.
 - The crop follows the photo when you rotate it. Piece editor windows start cropped to the drawing.
 
-**Rotate photo:** ⟲ 90° / ⟳ 90° for sideways photos, and **Straighten** (−45° to +45°) for a slight
-tilt. Corners exposed by straightening are transparent. Pieces stay attached to their drawings.
+**Rotate** opens the rotation settings: ⟲ 90° / ⟳ 90° for sideways photos, and **Straighten**
+(−45° to +45°) for a slight tilt. Corners exposed by straightening are transparent. Pieces stay
+attached to their drawings. Click **Rotate** again to hide the settings; the rotation stays.
+
+**Extract ink**, **Crop** and **Rotate** sit side by side at the top left. Each opens its
+settings under the row, highlighted in the same gray as the pressed button. Only one is open at a
+time: opening another closes it (closing Crop this way keeps your crop, like clicking Crop again).
 
 **Dark theme:** click the moon at the right of the toolbar (it becomes a sun; click that to go back). The app starts in whichever mode
 Windows apps use (Settings > Personalization > Colors), and every open window switches together.

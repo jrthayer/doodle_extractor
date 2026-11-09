@@ -372,65 +372,105 @@ class DoodleApp:
         side = ttk.Frame(parent, padding=(10, 6))
         side.pack(side="left", fill="y")
         tip = self._tip
-        self.extract_button = ttk.Button(side, text="Extract ink",
-                                         command=lambda: self.set_extract(not self.extract.get()))
-        tip(self.extract_button, "Turn the drawing into white lines on transparent, "
-                                 "ready for Godot")
-        self.extract_button.pack(anchor="w")
-        self.extract_holder = ttk.Frame(side)   # keeps the section's place in the column
+        # Extract ink / Crop / Rotate on one row; each opens its settings below
+        bar = ttk.Frame(side)
+        bar.pack(fill="x")
+        self.extract_button = ttk.Button(bar, text="Extract ink", width=-6,
+                                         command=self.toggle_extract_panel)
+        tip(self.extract_button, "Show the ink extraction settings; click again to hide them")
+        self.crop_button = ttk.Button(bar, text="Crop", width=-6, command=self.toggle_crop)
+        tip(self.crop_button, "Show the crop box; click again to close it")
+        self.rotate_button = ttk.Button(bar, text="Rotate", width=-6, command=self.toggle_rotate)
+        tip(self.rotate_button, "Show the rotate and straighten settings; click again to hide "
+                                "them")
+        for n, b in enumerate((self.extract_button, self.crop_button, self.rotate_button)):
+            b.pack(side="left", expand=True, fill="x", padx=(0 if n == 0 else 4, 0))
+
+        self.extract_holder = ttk.Frame(side)   # keeps each section's place in the column
         self.extract_holder.pack(fill="x")
         self._build_extract_section(self.extract_holder)
-
-        self.crop_button = ttk.Button(side, text="Crop", command=self.toggle_crop)
-        tip(self.crop_button, "Show the crop box; click again to close it")
-        self.crop_button.pack(anchor="w", pady=(14, 0))
-        self.crop_holder = ttk.Frame(side)   # keeps the crop section's place in the column
+        self.crop_holder = ttk.Frame(side)
         self.crop_holder.pack(fill="x")
         self._build_crop_section(self.crop_holder)
+        self.rotate_holder = ttk.Frame(side)
+        self.rotate_holder.pack(fill="x")
+        self._build_rotate_section(self.rotate_holder)
+        # Keep the column as wide as its widest section even when all are closed,
+        # so the preview doesn't jump sideways when one opens
+        side.update_idletasks()
+        widest = max(sec.winfo_reqwidth() for sec in
+                     (self.extract_section, self.crop_section, self.rotate_section))
+        ttk.Frame(side, width=widest, height=1).pack()
 
-        ttk.Label(side, text="Rotate photo").pack(anchor="w", pady=(14, 0))
-        row = ttk.Frame(side)
-        row.pack(anchor="w", pady=(4, 0))
-        tip(ttk.Button(row, text="⟲ 90°", command=lambda: self.rotate_photo(-1)),
+    def _build_rotate_section(self, parent):
+        """Rotation settings, shown only while the Rotate button is on. Like the
+        other sections it's highlighted in the button's "on" color."""
+        tip = self._tip
+        sec = self.rotate_section = ttk.Frame(parent, style="Opts.TFrame",
+                                              padding=(10, 8, 10, 10))
+        row = ttk.Frame(sec, style="Opts.TFrame")
+        row.pack(anchor="w")
+        tip(ttk.Button(row, text="⟲ 90°", width=-6, command=lambda: self.rotate_photo(-1)),
             "Turn the photo a quarter turn left").pack(side="left")
-        tip(ttk.Button(row, text="⟳ 90°", command=lambda: self.rotate_photo(1)),
+        tip(ttk.Button(row, text="⟳ 90°", width=-6, command=lambda: self.rotate_photo(1)),
             "Turn the photo a quarter turn right").pack(side="left", padx=4)
-        tip(ttk.Button(row, text="Reset", command=self.reset_rotation),
+        tip(ttk.Button(row, text="Reset", width=-6, command=self.reset_rotation),
             "Undo all rotation and straightening").pack(side="left")
         self.straighten_scale = self._slider(
-            side, "Straighten (degrees clockwise)", self.angle, -45, 45,
-            lambda v: self.schedule_rotate(), resolution=0.5,
+            sec, "Straighten (degrees clockwise)", self.angle, -45, 45,
+            lambda v: self.schedule_rotate(), resolution=0.5, length=220, style="Opts",
             tip="Rotate the photo slightly to fix a tilt; exposed corners become transparent")
 
+    def toggle_rotate(self):
+        self.set_rotate_open(not self.rotate_section.winfo_manager())
+
+    def set_rotate_open(self, on):
+        """Show or hide the rotate settings (the rotation itself stays)."""
+        if on:
+            self._close_other_sections("rotate")
+            self.rotate_section.pack(fill="x", pady=(6, 0))
+        else:
+            self.rotate_section.pack_forget()
+            self.rotate_holder.configure(height=1)   # Tk keeps an emptied frame's size
+        self.rotate_button.state(["pressed"] if on else ["!pressed"])
+
     def _build_extract_section(self, parent):
-        """Ink extraction settings, shown only while Extract ink is on."""
+        """Ink extraction settings, shown while the Extract ink button is on.
+        Apply extraction turns it on; the rest only shows while it's ticked."""
         # Highlighted in the "on" color of the Extract ink button, like the piece settings
         sec = self.extract_section = ttk.Frame(parent, style="Opts.TFrame",
                                                padding=(10, 0, 10, 10))
+        self.apply_check = self._tip(
+            ttk.Checkbutton(sec, text="Apply extraction", variable=self.extract,
+                            command=lambda: self.set_extract(self.extract.get()),
+                            style="Opts.TCheckbutton"),
+            "Turn the drawing into white lines on transparent, ready for Godot")
+        self.apply_check.pack(anchor="w", pady=(10, 0))
+        body = self.extract_body = ttk.Frame(sec, style="Opts.TFrame")
         self.black_scale = self._slider(
-            sec, "Black (solid ink at or below)", self.black, 0, 255, self.on_black, length=220,
+            body, "Black (solid ink at or below)", self.black, 0, 255, self.on_black, length=220,
             style="Opts", tip="Ink this dark or darker is fully solid. Raise it if line middles look gray.")
         self.white_scale = self._slider(
-            sec, "White (transparent at or above)", self.white, 0, 255, self.on_white, length=220,
+            body, "White (transparent at or above)", self.white, 0, 255, self.on_white, length=220,
             style="Opts", tip="Anything this light or lighter turns transparent. Lower it if the grid shows; "
                 "raise it if lines break.")
         self.specks_scale = self._slider(
-            sec, "Remove specks smaller than (px)", self.min_speck, 0, 100,
+            body, "Remove specks smaller than (px)", self.min_speck, 0, 100,
             lambda v: self.schedule_refresh(), length=220, style="Opts",
             tip="Erase dots smaller than this many pixels")
         tip = ("• Grid showing? Lower White.\n"
                "• Lines broken? Raise White.\n"
                "• Line middles gray? Raise Black.\n"
                "• Color it in Godot: Self Modulate.")
-        self.tips = ttk.Label(sec, text=tip, justify="left", style="Opts.TLabel")
+        self.tips = ttk.Label(body, text=tip, justify="left", style="Opts.TLabel")
         self._muted.append(self.tips)
         self.tips.pack(anchor="w", pady=(10, 0))
-        self.paper_check = ttk.Checkbutton(sec, text="Detect paper (ignore the desk)",
+        self.paper_check = ttk.Checkbutton(body, text="Detect paper (ignore background)",
                                            variable=self.detect_paper, command=self.reprepare,
                                            style="Opts.TCheckbutton")
-        self._tip(self.paper_check, "Ignore the desk around the page")
+        self._tip(self.paper_check, "Ignore the background around the page")
         self.paper_check.pack(anchor="w", pady=(10, 0))
-        self._tip(ttk.Button(sec, text="Reset sliders", command=self.reset),
+        self._tip(ttk.Button(body, text="Reset sliders", command=self.reset),
                   "Put Black, White and Remove specks back to their defaults").pack(
             anchor="w", pady=(8, 0))
 
@@ -758,20 +798,42 @@ class DoodleApp:
         self.schedule_refresh()
 
     def set_extract(self, on, redraw=True):
-        """Extract ink on: show/save the extracted ink and open its settings.
+        """Apply extraction on: show/save the extracted ink (and its settings).
         Off: show/save the photo itself (the slider values are kept)."""
         self.extract.set(on)
-        self.extract_button.state(["pressed"] if on else ["!pressed"])
+        self.extract_button.configure(text="Extract ink ✓" if on else "Extract ink")
         self.tint_swatch.configure(state="normal" if on else "disabled")
         if on:
+            self.extract_body.pack(fill="x", after=self.apply_check)
+        else:
+            self.extract_body.pack_forget()
+        if redraw and self.rflat is not None:
+            self.refresh()
+            self.status.set("Extraction on: tune the sliders. Untick Apply extraction to show "
+                            "the photo." if on else "Showing the photo as is.")
+
+    def toggle_extract_panel(self):
+        self.set_extract_open(not self.extract_section.winfo_manager())
+
+    def _close_other_sections(self, keep):
+        """Extract ink, Crop and Rotate: only one has its settings open at a time.
+        Closing Crop this way keeps the crop box, like clicking Crop again."""
+        if keep != "extract" and self.extract_section.winfo_manager():
+            self.set_extract_open(False)
+        if keep != "rotate" and self.rotate_section.winfo_manager():
+            self.set_rotate_open(False)
+        if keep != "crop" and self.cropping:
+            self.save_crop()
+
+    def set_extract_open(self, on):
+        """Show or hide the Extract ink settings (extraction itself is unchanged)."""
+        if on:
+            self._close_other_sections("extract")
             self.extract_section.pack(fill="x", pady=(6, 0))
         else:
             self.extract_section.pack_forget()
             self.extract_holder.configure(height=1)   # Tk keeps an emptied frame's size
-        if redraw and self.rflat is not None:
-            self.refresh()
-            self.status.set("Extract ink: tune the sliders. Click Extract ink again to turn "
-                            "it off." if on else "Showing the photo as is.")
+        self.extract_button.state(["pressed"] if on else ["!pressed"])
 
     def pick_tint(self):
         rgb, _ = colorchooser.askcolor(color=self._hex(self.tint), title="Preview line color",
@@ -1548,6 +1610,7 @@ class DoodleApp:
     def start_crop(self):
         if self.rflat is None or self.cropping:
             return
+        self._close_other_sections("crop")
         self._flush()
         self.set_select_mode(False)
         self.set_pick_mode(False)

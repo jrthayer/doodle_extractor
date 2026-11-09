@@ -623,6 +623,8 @@ def test_extract_toggle():
         # Default: no extraction. Section hidden, button up, photo saved as is
         assert not app.extract.get() and not app.extract_section.winfo_manager()
         assert "pressed" not in app.extract_button.state()
+        assert app.extract_button.cget("text") == "Extract ink"
+        assert "ignore background" in app.paper_check.cget("text")
         assert str(app.tint_swatch.cget("state")) == "disabled"
         assert app.save_path(out)
         saved = read(out)
@@ -637,23 +639,39 @@ def test_extract_toggle():
         assert piece[190, 190, 3] == 255 and piece[0, 0, 3] == 0
         assert np.array_equal(piece[190, 190, :3], bgr[400, 400])
 
-        # Turning it on: section shows, button pressed, white ink is saved
+        # The button only opens the settings: just "Apply extraction" until it's ticked
         app.white.set(150)
         app.extract_button.invoke()
         root.update()
-        assert app.extract.get() and app.extract_section.winfo_manager()
-        assert "pressed" in app.extract_button.state()
+        assert app.extract_section.winfo_manager() and "pressed" in app.extract_button.state()
+        assert not app.extract.get() and not app.extract_body.winfo_manager()
+        assert app.save_path(out) and np.array_equal(read(out)[:, :, :3], bgr), "still the photo"
+
+        # Apply extraction: the rest of the settings show, the button gets a ✓, white ink saved
+        app.apply_check.invoke()
+        root.update()
+        assert app.extract.get() and app.extract_body.winfo_manager()
+        assert app.extract_button.cget("text") == "Extract ink ✓"
         assert app.save_path(out)
         ink = read(out)
         assert (ink[:, :, :3] == 255).all() and ink[:, :, 3].min() == 0
         flat, mask = core.prepare(bgr)
         assert np.array_equal(ink, core.process(flat, mask, app.settings()))
 
-        # Off again: section collapses, photo is back, slider values kept
+        # Closing the settings keeps extraction on
         app.extract_button.invoke()
         root.update()
-        assert not app.extract.get() and not app.extract_section.winfo_manager()
-        assert app.extract_holder.winfo_height() <= 1
+        assert not app.extract_section.winfo_manager() and app.extract_holder.winfo_height() <= 1
+        assert app.extract.get() and app.extract_button.cget("text") == "Extract ink ✓"
+        assert app.save_path(out) and (read(out)[:, :, :3] == 255).all()
+
+        # Unticking Apply extraction: settings fold away, photo is back, slider values kept
+        app.extract_button.invoke()
+        app.apply_check.invoke()
+        root.update()
+        assert not app.extract.get() and not app.extract_body.winfo_manager()
+        assert app.extract_button.cget("text") == "Extract ink"
+        app.extract_button.invoke()
         assert app.white.get() == 150, "slider value remembered"
         assert app.save_path(out) and np.array_equal(read(out)[:, :, :3], bgr)
 
@@ -690,7 +708,8 @@ def test_extract_toggle():
         editor.root.destroy()
         app.set_extract(True)
         editor = app.edit_piece(0)
-        assert editor.extract.get() and editor.extract_section.winfo_manager()
+        assert editor.extract.get() and editor.extract_button.cget("text") == "Extract ink ✓"
+        assert not editor.extract_section.winfo_manager(), "its settings start closed"
         editor.root.destroy()
         root.destroy()
     print("extract toggle ok")
@@ -753,7 +772,7 @@ def test_theme():
         assert str(app.smooth_scale.cget("bg")) == DARK["pressed"], "settings highlight"
         for a in (app, editor):
             assert a.dark.get() and a.canvas.cget("bg") == DARK["canvas"]
-            assert str(a._scales[0].cget("bg")) == DARK["bg"]
+            assert str(a._opt_scales[0].cget("bg")) == DARK["pressed"]
             assert str(a.tips.cget("foreground")) == DARK["muted"]
         assert app._rows[0][0].cget("bg") == DARK["row"]
         app.select_piece(0)
@@ -1106,6 +1125,7 @@ def test_piece_add_cut_gui():
         app.open_path(src)
         app.white.set(160)
         app.set_extract(True)
+        app.set_extract_open(True)    # the slider checks below need its settings visible
         app.hug.set(False)            # loops kept exactly as drawn: predictable shapes
         root.update()
 
@@ -1171,6 +1191,39 @@ def test_piece_add_cut_gui():
         assert not app.white_scale.step(1) and app.white.get() == 255, "stops at the end"
         app.white.set(160)
         app.on_white()
+        # Extract ink / Crop / Rotate share one row; Rotate opens its settings
+        row = (app.extract_button, app.crop_button, app.rotate_button)
+        assert len({b.winfo_parent() for b in row}) == 1
+        assert len({b.winfo_y() for b in row}) == 1
+        assert not app.rotate_section.winfo_manager()
+        assert "pressed" not in app.rotate_button.state()
+        app.rotate_button.invoke()
+        assert app.rotate_section.winfo_manager() and "pressed" in app.rotate_button.state()
+        turn_right = [w for w in app.rotate_section.winfo_children()[0].winfo_children()
+                      if w.cget("text") == "⟳ 90°"][0]
+        turn_right.invoke()
+        assert app.quarter == 1
+        app.rotate_button.invoke()
+        assert not app.rotate_section.winfo_manager() and app.quarter == 1, "rotation stays"
+
+        # Only one of Extract ink / Crop / Rotate is open at a time
+        opened = lambda: [n for n, on in (("extract", app.extract_section.winfo_manager()),
+                                          ("crop", app.cropping),
+                                          ("rotate", app.rotate_section.winfo_manager())) if on]
+        pressed = lambda: [b.cget("text") for b in row if "pressed" in b.state()]
+        app.extract_button.invoke()
+        assert opened() == ["extract"] and len(pressed()) == 1
+        app.crop_button.invoke()
+        assert opened() == ["crop"] and pressed() == ["Crop"]
+        app.rotate_button.invoke()
+        assert opened() == ["rotate"] and pressed() == ["Rotate"]
+        assert app.crop_corners is None, "closing Crop this way keeps (here: no) crop"
+        app.extract_button.invoke()
+        assert opened() == ["extract"]
+        app.extract_button.invoke()
+        assert opened() == [] and pressed() == []
+        app.rotate_photo(-1)
+        root.update()
         assert app.straighten_scale.step(1) and app.angle.get() == 0.5
         assert app._rotate_job is not None
         app.straighten_scale.step(-1)
