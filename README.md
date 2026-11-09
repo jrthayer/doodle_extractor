@@ -66,8 +66,17 @@ you can loop around the next one.
 - **Edit…** opens the piece in its own window: full-size preview, zoom, rotation and
   its own settings (starting from the main window's, including whether Extract ink is on). **Save PNG** there saves the
   piece. You can open several at once.
+- **+** / **−** (under a piece's thumbnail) add to or cut from that piece's outline. With
+  **+** on, drag a loop to join it to the piece (hugged to the drawing when Hug the drawing
+  is ticked), or click inside another piece to add all of that piece's area (the other piece stays
+  in the list). With **−** on, drag a loop around what to remove; it cuts exactly where
+  you drew, and can leave holes. Both stay on so you can make several changes; Esc or clicking the
+  button again stops. Once a piece has been changed this way, Smoothing and Reach leave it alone.
 - Select piece stays on so you can loop several drawings in a row. Click it again (or press
   **Esc**) to go back to moving the image; Esc while drawing cancels just that loop.
+- While a mode is on (Pick object, Select piece, + / −, Crop), a dark banner across the top of the
+  preview says which one and how to stop it.
+- Thumbnails show transparent parts as a checkerboard, whatever the preview background is.
 - Click a row to select it (highlighted orange on the preview). **Delete** removes the selected piece.
 
 ## Command line

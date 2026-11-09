@@ -32,6 +32,9 @@ ZOOM_STEP = 1.25
 PIECE_COLOR = "#1e90ff"
 SELECTED_COLOR = "#ff8c00"
 CROP_COLOR = "#ff3b6b"
+EDIT_TIPS = {"add": "Add area: loop more of the drawing, or click another piece",
+             "cut": "Cut area: loop what to remove from this piece"}
+BANNER_H = 34                 # mode banner height over the preview (px)
 # Colors for the classic Tk widgets (ttk widgets get theirs from the ttk theme)
 LIGHT = dict(bg="SystemButtonFace", fg="SystemButtonText", muted="#555555", canvas="#808080",
              row="#f4f4f4", row_sel="#ffe2bf", trough="SystemScrollbar",
@@ -148,6 +151,8 @@ class Piece:
     smooth: int = 0           # smoothing used for poly
     seed: np.ndarray = None   # Pick object: the clicked point (original coords)
     reach: int = 50           # Pick object: how far it grouped nearby strokes
+    edited: bool = False      # areas were added or cut: poly is a list of contours and
+                              # Smoothing / Reach leave it alone
 
 
 _APPS = []                # every open converter window (main + piece editors)
@@ -231,6 +236,7 @@ class DoodleApp:
         self.smooth = tk.IntVar(value=30)              # how much hugged outlines are rounded
         self.reach = tk.IntVar(value=50)               # Pick object: how much a click grabs
         self.pick_mode = tk.BooleanVar(value=False)    # left-click picks objects
+        self.edit_mode = None     # (piece index, "add" | "cut"): loops change that piece
         self._pick_press = None
         self._repick_job = None
         self._smooth_job = None
@@ -786,8 +792,12 @@ class DoodleApp:
         return f"{self.base}_piece{i + 1}.png"
 
     def piece_poly(self, i):
-        """Piece i's loop in current (rotated) photo coords."""
-        return core.transform_points(self.R, self.pieces[i].poly).round().astype(np.int32)
+        """Piece i's loop in current (rotated) photo coords. For an edited piece,
+        a list of contours (outlines and holes)."""
+        poly = self.pieces[i].poly
+        if isinstance(poly, list):
+            return [core.transform_points(self.R, c).round().astype(np.int32) for c in poly]
+        return core.transform_points(self.R, poly).round().astype(np.int32)
 
     def add_piece(self, polygon, loop=None, hugged=False, smooth=0):
         """Add a loop given in current (rotated) photo coords. `loop` is the loop
@@ -819,6 +829,12 @@ class DoodleApp:
         return editor
 
     def delete_piece(self, i):
+        if self.edit_mode:
+            j, op = self.edit_mode
+            if j == i:
+                self.set_edit_mode(None)
+            elif j > i:
+                self.edit_mode = (j - 1, op)
         del self.pieces[i]
         if self.selected is not None:
             if self.selected == i:
@@ -830,6 +846,8 @@ class DoodleApp:
         self.render()
 
     def clear_pieces(self):
+        if self.edit_mode:
+            self.set_edit_mode(None)
         self.pieces, self.selected = [], None
         self._rebuild_rows()
 
@@ -868,6 +886,8 @@ class DoodleApp:
         if i is None or i >= len(self.pieces) or self.alpha is None:
             return
         piece, v = self.pieces[i], self.smooth.get()
+        if piece.edited:
+            return
         if piece.seed is not None:
             self.repick(smooth_only=True)
             return
@@ -918,7 +938,7 @@ class DoodleApp:
         if i is None or i >= len(self.pieces) or self.alpha is None:
             return
         piece = self.pieces[i]
-        if piece.seed is None:
+        if piece.seed is None or piece.edited:
             return
         reach = piece.reach if smooth_only else self.reach.get()
         smooth = self.smooth.get()
@@ -938,6 +958,8 @@ class DoodleApp:
             on = False
         if on and self.select_mode.get():
             self.set_select_mode(False)
+        if on and self.edit_mode:
+            self.set_edit_mode(None)
         self.pick_mode.set(on)
         self._pick_press = None
         self.pick_button.state(["pressed"] if on else ["!pressed"])
@@ -947,6 +969,7 @@ class DoodleApp:
         if self.flat is not None and not self.cropping:
             self.status.set("Pick object: click a drawing's line or a solid shape. Esc stops."
                             if on else "Drag to move, scroll to zoom.")
+        self._draw_banner()
 
     def save_piece(self, i, p):
         if not self._ready():
@@ -1001,8 +1024,20 @@ class DoodleApp:
             bg = palette()["row_sel"] if i == self.selected else palette()["row"]
             row = tk.Frame(self.list_inner, bg=bg, padx=4, pady=4)
             row.pack(fill="x", pady=2)
-            thumb = tk.Label(row, bg=bg, image=self._blank, width=THUMB, height=THUMB)
-            thumb.pack(side="left")
+            col = tk.Frame(row, bg=bg)        # thumbnail with + / − under it
+            col.pack(side="left", anchor="n")
+            thumb = tk.Label(col, bg=bg, image=self._blank, width=THUMB, height=THUMB)
+            thumb.pack()
+            edit_box = tk.Frame(col, bg=bg)
+            edit_box.pack(pady=(2, 0))
+            for op, label, tip in (("add", "+", EDIT_TIPS["add"]), ("cut", "−", EDIT_TIPS["cut"])):
+                b = ttk.Button(edit_box, text=label, width=3,
+                               command=lambda i=i, op=op: self.toggle_edit_mode(i, op))
+                b.pack(side="left", padx=1)
+                b.bind("<Enter>", lambda e, tip=tip: self._hover_tip(tip))
+                b.bind("<Leave>", lambda e: self._hover_tip(None))
+                if self.edit_mode == (i, op):
+                    b.state(["pressed"])
             info = tk.Frame(row, bg=bg)
             info.pack(side="left", fill="both", expand=True, padx=(6, 0))
             text = tk.Label(info, text=f"Piece {i + 1}", bg=bg, fg=palette()["fg"],
@@ -1014,9 +1049,9 @@ class DoodleApp:
                                ("✕ Remove", self.delete_piece)):
                 ttk.Button(btns, text=label, width=11,
                            command=lambda i=i, cmd=cmd: cmd(i)).pack(anchor="w", pady=(2, 0))
-            for widget in (row, thumb, text, info, btns):
+            for widget in (row, thumb, text, info, btns, col, edit_box):
                 widget.bind("<Button-1>", lambda e, i=i: self.select_piece(i))
-            self._rows.append((row, thumb, text, info, btns))
+            self._rows.append((row, thumb, text, info, btns, col, edit_box))
             self._thumbs.append(None)
 
     def _update_rows(self):
@@ -1135,6 +1170,9 @@ class DoodleApp:
     def _lasso_end(self, _e):
         pts, self._lasso = self._lasso, None
         self.canvas.delete("lasso")
+        if self.edit_mode:
+            self._edit_with_loop(pts)
+            return
         if not pts or len(pts) < 3:
             return
         pts = np.array(pts, np.float32)
@@ -1154,6 +1192,83 @@ class DoodleApp:
                 note = " (no ink found inside the loop, kept as drawn)"
             i = self.add_piece(pts, loop=pts)
         self.status.set(f"Added piece {i + 1}{note}. Drag around another drawing, or save.")
+
+    def _edit_with_loop(self, pts):
+        """+ Add area / − Cut area: change the target piece with the loop just
+        drawn (working coords). In add mode, a click inside another piece adds
+        that piece's whole area."""
+        i, op = self.edit_mode
+        if not pts:
+            return
+        click = len(pts) < 3 or cv2.contourArea(np.array(pts, np.float32)) * self.scale ** 2 < 64
+        h, w = self.flat.shape
+        if click:
+            if op != "add":
+                return
+            x, y = pts[-1]
+            hits = [j for j in range(len(self.pieces))
+                    if j != i and core.shape_contains(self.piece_poly(j), (x, y))]
+            if not hits:
+                self.status.set("Click inside another piece, or drag a loop around an area.")
+                return
+            j = hits[-1]                     # the one drawn on top
+            other, what = self.piece_poly(j), f"piece {j + 1}"
+        else:
+            loop = np.array(pts, np.float32)
+            loop[:, 0] = loop[:, 0].clip(0, w - 1)
+            loop[:, 1] = loop[:, 1].clip(0, h - 1)
+            other = loop.round().astype(np.int32)
+            what = "the loop"
+            if op == "add" and self.hug.get():
+                hugged = core.hug_loop(self._hug_alpha(), other, smooth=self.smooth.get(),
+                                       color=self.color)
+                if hugged is not None:
+                    other, what = hugged, "the drawing in the loop"
+        result = core.combine_shapes(self.piece_poly(i), other, op, (h, w))
+        if result is None:
+            self.status.set("That would remove the whole piece; use ✕ Remove to delete it.")
+            return
+        piece = self.pieces[i]
+        piece.poly = [core.transform_points(self.Rinv, c.astype(np.float64)) for c in result]
+        piece.edited, piece.loop, piece.seed = True, None, None
+        self._update_rows()
+        self.render()
+        verb = "Added" if op == "add" else "Cut"
+        prep = "to" if op == "add" else "from"
+        self.status.set(f"{verb} {what} {prep} piece {i + 1}. Keep going, or press Esc.")
+
+    def toggle_edit_mode(self, i, op):
+        self._status_before = None    # the button's hover hint shouldn't come back over this
+        on = self.edit_mode != (i, op)
+        self.set_edit_mode((i, op) if on else None)
+
+    def set_edit_mode(self, mode):
+        """mode = (piece index, "add" | "cut"), or None to stop. While on,
+        left-drag draws loops that change that piece."""
+        if mode and (self.cropping or self.flat is None):
+            mode = None
+        self._lasso_cancel()
+        if mode:
+            if self.select_mode.get():
+                self.set_select_mode(False)
+            if self.pick_mode.get():
+                self.set_pick_mode(False)
+        self.edit_mode = mode
+        if mode:
+            self.selected = mode[0]
+        self._rebuild_rows()
+        self._update_rows()
+        if not self.cropping:
+            self.canvas.config(cursor=self._mode_cursor())
+        if mode:
+            i, op = mode
+            self.status.set(f"Adding to piece {i + 1}: drag a loop, or click another piece. "
+                            "Esc stops." if op == "add" else
+                            f"Cutting from piece {i + 1}: drag a loop around what to remove. "
+                            "Esc stops.")
+        elif self.flat is not None and not self.cropping:
+            self.status.set("Drag to move, scroll to zoom.")
+        self.render()
 
     def _lasso_cancel(self, _=None):
         self._lasso = None
@@ -1250,6 +1365,8 @@ class DoodleApp:
         self._flush()
         self.set_select_mode(False)
         self.set_pick_mode(False)
+        if self.edit_mode:
+            self.set_edit_mode(None)
         self.cropping = True
         full = self._full_rect()
         if self.crop_fit_saved:
@@ -1319,6 +1436,7 @@ class DoodleApp:
             self.tips.pack(anchor="w", pady=(10, 0), after=self.specks_scale)
         self.canvas.config(cursor=self._mode_cursor())
         self.fit = True
+        self._draw_banner()
 
     def set_crop_box(self, x, y, w, h, user=True):
         """Move/resize the crop box (clamped to the image)."""
@@ -1442,7 +1560,7 @@ class DoodleApp:
     def _mode_cursor(self):
         if self.pick_mode.get():
             return "tcross"
-        return "crosshair" if self.select_mode.get() else "fleur"
+        return "crosshair" if self.select_mode.get() or self.edit_mode else "fleur"
 
     def set_select_mode(self, on):
         """Select piece mode: left-drag draws loops. Off: left-drag pans."""
@@ -1452,6 +1570,8 @@ class DoodleApp:
             self._lasso_cancel()
         elif self.pick_mode.get():
             self.set_pick_mode(False)
+        if on and self.edit_mode:
+            self.set_edit_mode(None)
         self.select_mode.set(on)
         self.select_button.state(["pressed"] if on else ["!pressed"])
         self.select_button.configure(text="Selecting pieces (Esc to stop)" if on
@@ -1461,11 +1581,12 @@ class DoodleApp:
         if self.flat is not None and not self.cropping:
             self.status.set("Select piece: drag around a drawing. Esc stops." if on
                             else "Drag to move, scroll to zoom.")
+        self._draw_banner()
 
     def _left_press(self, e):
         if self.cropping:
             self._crop_press(e)
-        elif self.select_mode.get():
+        elif self.select_mode.get() or self.edit_mode:
             self._lasso_start(e)
         else:
             if self.pick_mode.get():
@@ -1496,6 +1617,8 @@ class DoodleApp:
             self.save_crop()
         elif self._lasso:
             self._lasso_cancel()
+        elif self.edit_mode:
+            self.set_edit_mode(None)
         elif self.select_mode.get():
             self.set_select_mode(False)
         elif self.pick_mode.get():
@@ -1505,42 +1628,76 @@ class DoodleApp:
         if self.cropping:
             self.save_crop()
 
-    def _background(self, w, h):
-        key = (self.bg_mode.get(), w, h)
+    def _background(self, w, h, mode=None, cell=12):
+        mode = mode or self.bg_mode.get()
+        key = (mode, w, h, cell)
         if key not in self._bg_cache:
             if len(self._bg_cache) > 50:
                 self._bg_cache.clear()
-            mode = self.bg_mode.get()
             if mode == "Dark":
                 bg = np.full((h, w, 3), 40, np.float32)
             elif mode == "Checker":
                 yy, xx = np.indices((h, w))
-                cells = ((yy // 12 + xx // 12) % 2).astype(np.float32)
+                cells = ((yy // cell + xx // cell) % 2).astype(np.float32)
                 bg = np.repeat((150 + 60 * cells)[:, :, None], 3, axis=2)
             else:
                 bg = np.full((h, w, 3), 245, np.float32)
             self._bg_cache[key] = bg
         return self._bg_cache[key]
 
-    def _composite(self, alpha):
+    def _composite(self, alpha, bg=None):
         """Alpha -> RGB preview: tint color over the preview background."""
         h, w = alpha.shape
         a = (alpha.astype(np.float32) / 255)[:, :, None]
-        out = self._background(w, h) * (1 - a) + np.array(self.tint, np.float32) * a
+        bg = self._background(w, h) if bg is None else bg
+        out = bg * (1 - a) + np.array(self.tint, np.float32) * a
         return out.astype(np.uint8)
 
-    def _composite_color(self, bgr, alpha):
+    def _composite_color(self, bgr, alpha, bg=None):
         """The photo (with its alpha) over the preview background, as RGB."""
         h, w = alpha.shape
         a = (alpha.astype(np.float32) / 255)[:, :, None]
-        out = self._background(w, h) * (1 - a) + bgr[:, :, ::-1].astype(np.float32) * a
+        bg = self._background(w, h) if bg is None else bg
+        out = bg * (1 - a) + bgr[:, :, ::-1].astype(np.float32) * a
         return out.astype(np.uint8)
 
     def _preview_rgb(self, bgra):
-        """How a saved BGRA image looks in the preview (thumbnails)."""
+        """A saved BGRA image as a piece thumbnail: always over a fine checkerboard,
+        so transparent parts are easy to see."""
+        h, w = bgra.shape[:2]
+        bg = self._background(w, h, mode="Checker", cell=6)
         if self.extract.get():
-            return self._composite(bgra[:, :, 3])
-        return self._composite_color(bgra[:, :, :3], bgra[:, :, 3])
+            return self._composite(bgra[:, :, 3], bg)
+        return self._composite_color(bgra[:, :, :3], bgra[:, :, 3], bg)
+
+    def _mode_banner_text(self):
+        """What the banner over the preview says, or None when no mode is on."""
+        if self.cropping:
+            return "Cropping (Enter to save, Esc to close)"
+        if self.edit_mode:
+            i, op = self.edit_mode
+            if op == "add":
+                return f"Adding to piece {i + 1}: loop an area or click another piece (Esc to stop)"
+            return f"Cutting from piece {i + 1}: loop what to remove (Esc to stop)"
+        if self.pick_mode.get():
+            return "Picking objects (Esc to stop)"
+        if self.select_mode.get():
+            return "Selecting pieces (Esc to stop)"
+        return None
+
+    def _draw_banner(self):
+        """A see-through dark strip across the top of the preview naming the mode."""
+        self.canvas.delete("banner")
+        text = self._mode_banner_text()
+        if text is None or self.flat is None:
+            return
+        cw = max(self.canvas.winfo_width(), 1)
+        strip = Image.new("RGBA", (cw, BANNER_H), (0, 0, 0, 150))
+        self._banner_photo = ImageTk.PhotoImage(strip)
+        self.canvas.create_image(0, 0, anchor="nw", image=self._banner_photo,
+                                 tags="banner", state="disabled")
+        self.canvas.create_text(cw / 2, BANNER_H / 2, text=text, fill="white",
+                                font=("Segoe UI", 11, "bold"), tags="banner", state="disabled")
 
     def _view_crop(self, arr):
         """The visible part of a working-image layer, resized to screen pixels.
@@ -1596,11 +1753,15 @@ class DoodleApp:
         self.canvas.create_image(round(px), round(py), anchor="nw", image=self._photo)
 
         for i in range(len(self.pieces)):
-            pts = (self.piece_poly(i) - (self.vx, self.vy)) * s
+            poly = self.piece_poly(i)
+            contours = [(c - (self.vx, self.vy)) * s
+                        for c in (poly if isinstance(poly, list) else [poly])]
             sel = i == self.selected
             color = SELECTED_COLOR if sel else PIECE_COLOR
-            self.canvas.create_polygon(pts.ravel().tolist(), outline=color, fill="",
-                                       width=3 if sel else 2)
+            for pts in contours:
+                self.canvas.create_polygon(pts.ravel().tolist(), outline=color, fill="",
+                                           width=3 if sel else 2)
+            pts = np.concatenate(contours)
             lx, ly = pts[:, 0].min(), pts[:, 1].min()
             self.canvas.create_text(lx + 4, ly + 4, text=str(i + 1), anchor="nw",
                                     fill=color, font=("Segoe UI", 12, "bold"))
@@ -1620,6 +1781,7 @@ class DoodleApp:
                            (bx, by), (mx, by), (ax, by), (ax, my)):
                 self.canvas.create_rectangle(hx - 5, hy - 5, hx + 5, hy + 5,
                                              fill="white", outline=CROP_COLOR, width=2)
+        self._draw_banner()
 
 
 def main():

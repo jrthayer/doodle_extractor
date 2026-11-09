@@ -251,11 +251,55 @@ def finish_alpha(flat, mask, s: Settings):
     return remove_specks(alpha, s.min_speck)
 
 
+def _contours(shape):
+    """A piece shape as a list of int32 (N, 1, 2) contours. A shape is either
+    one polygon ((N, 2) points) or a list of contours (outlines and holes),
+    as made by `combine_shapes`."""
+    if isinstance(shape, (list, tuple)) and len(shape) and np.ndim(shape[0]) >= 2:
+        return [np.asarray(c, np.int32).reshape(-1, 1, 2) for c in shape]
+    return [np.asarray(shape, np.int32).reshape(-1, 1, 2)]
+
+
+def _all_points(shape):
+    return np.concatenate([c.reshape(-1, 2) for c in _contours(shape)])
+
+
+def combine_shapes(a, b, op, size):
+    """Join (`op="add"`) or cut (`op="cut"`) shape `b` into shape `a`. `size`
+    is the image's (h, w). Returns a list of contours (outlines and holes), or
+    None if nothing is left."""
+    H, W = size
+    pts = np.concatenate([_all_points(a), _all_points(b)])
+    x0, y0 = max(int(pts[:, 0].min()) - 2, 0), max(int(pts[:, 1].min()) - 2, 0)
+    x1, y1 = min(int(pts[:, 0].max()) + 3, W), min(int(pts[:, 1].max()) + 3, H)
+    if x1 <= x0 or y1 <= y0:
+        return None
+
+    def raster(shape):
+        m = np.zeros((y1 - y0, x1 - x0), np.uint8)
+        cv2.fillPoly(m, [c - (x0, y0) for c in _contours(shape)], 255)
+        return m
+
+    ma, mb = raster(a), raster(b)
+    m = cv2.bitwise_or(ma, mb) if op == "add" else cv2.bitwise_and(ma, cv2.bitwise_not(mb))
+    cs, _ = cv2.findContours(m, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    cs = [c.reshape(-1, 2) + (x0, y0) for c in cs if len(c) >= 3 and cv2.contourArea(c) >= 4]
+    return cs or None
+
+
+def shape_contains(shape, pt):
+    """True if `pt` (x, y) is inside the shape (holes count as outside)."""
+    p = (float(pt[0]), float(pt[1]))
+    n = sum(cv2.pointPolygonTest(c, p, False) >= 0 for c in _contours(shape))
+    return n % 2 == 1
+
+
 def cut_piece(alpha, polygon, pad):
-    """Keep only the ink inside `polygon` (list of (x, y) points), cropped
-    to that ink plus `pad`. The polygon edge is anti-aliased."""
+    """Keep only the ink inside `polygon` (list of (x, y) points, or a list of
+    contours), cropped to that ink plus `pad`. The edge is anti-aliased."""
     H, W = alpha.shape
-    pts = np.asarray(polygon, np.int32).reshape(-1, 2)
+    contours = _contours(polygon)
+    pts = _all_points(polygon)
 
     # Only work inside the loop's bounding box (plus padding room): much
     # faster than masking the whole photo.
@@ -269,7 +313,7 @@ def cut_piece(alpha, polygon, pad):
     local = (pts - (x0, y0)).reshape(-1, 1, 2)
     sub = alpha[y0:y1, x0:x1]
     region = np.zeros_like(sub)
-    cv2.fillPoly(region, [local], 255, lineType=cv2.LINE_AA)
+    cv2.fillPoly(region, [c - (x0, y0) for c in contours], 255, lineType=cv2.LINE_AA)
     cut = np.minimum(sub, region)
 
     box = crop_box(cut, pad)
@@ -306,7 +350,7 @@ def _loop_bounds(shape, polygon, margin):
     """The loop's bounding box (plus `margin`, clamped to the image) and the
     loop filled in (soft-edged) over that box. None if it's off the image."""
     H, W = shape
-    pts = np.asarray(polygon, np.int32).reshape(-1, 2)
+    pts = _all_points(polygon)
     x0 = max(int(pts[:, 0].min()) - margin, 0)
     y0 = max(int(pts[:, 1].min()) - margin, 0)
     x1 = min(int(pts[:, 0].max()) + margin + 1, W)
@@ -314,7 +358,8 @@ def _loop_bounds(shape, polygon, margin):
     if x1 <= x0 or y1 <= y0:
         return None
     region = np.zeros((y1 - y0, x1 - x0), np.uint8)
-    cv2.fillPoly(region, [(pts - (x0, y0)).reshape(-1, 1, 2)], 255, lineType=cv2.LINE_AA)
+    cv2.fillPoly(region, [c - (x0, y0) for c in _contours(polygon)], 255,
+                 lineType=cv2.LINE_AA)
     return (x0, y0, x1, y1), region
 
 

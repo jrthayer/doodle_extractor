@@ -1053,6 +1053,157 @@ def test_pick_object():
     print("pick object ok")
 
 
+def test_combine_shapes():
+    size = (400, 600)
+    sq = lambda x0, y0, x1, y1: np.array([(x0, y0), (x1, y0), (x1, y1), (x0, y1)], np.int32)
+    ink = np.full(size, 255, np.uint8)
+
+    both = core.combine_shapes(sq(50, 50, 150, 150), sq(300, 50, 400, 150), "add", size)
+    assert len(both) == 2
+    cut = core.cut_piece(ink, both, 0)
+    assert cut.shape[1] >= 350 and cut.astype(int).sum() >= 2 * 100 * 100 * 255 * 0.97
+    assert core.shape_contains(both, (100, 100)) and core.shape_contains(both, (350, 100))
+    assert not core.shape_contains(both, (220, 100))
+
+    holed = core.combine_shapes(sq(50, 50, 250, 250), sq(100, 100, 200, 200), "cut", size)
+    assert len(holed) == 2, "outline plus hole"
+    assert not core.shape_contains(holed, (150, 150)) and core.shape_contains(holed, (70, 70))
+    out = core.cut_piece(ink, holed, 0)        # cropped at (50, 50)
+    assert out[100, 100] == 0 and out[20, 20] == 255, "hole dropped, ring kept"
+    src, _ = core.piece_source(255 - ink, None, holed, margin=0)
+    assert src[100, 100] == 255 and src[20, 20] == 0, "piece editor sees the hole as paper"
+
+    assert core.combine_shapes(sq(100, 100, 200, 200), sq(50, 50, 250, 250), "cut", size) is None
+    print("combine shapes ok")
+
+
+def test_piece_add_cut_gui():
+    import tkinter as tk
+    from tkinter import ttk
+    from doodle_gui import DoodleApp
+
+    class Ev:
+        def __init__(self, x, y):
+            self.x, self.y = int(round(x)), int(round(y))
+
+    bgr = fake_photo()[0]
+    with tempfile.TemporaryDirectory() as d:
+        src = Path(d) / "photo.png"
+        core.save_png(src, bgr)
+        root = tk.Tk()
+        root.geometry("1300x800")
+        app = DoodleApp(root)
+        root.update()
+        app.open_path(src)
+        app.white.set(160)
+        app.set_extract(True)
+        app.hug.set(False)            # loops kept exactly as drawn: predictable shapes
+        root.update()
+
+        def left_drag(points):
+            pts = [app.to_canvas(x, y) for x, y in points]
+            app._left_press(Ev(*pts[0]))
+            for p in pts[1:]:
+                app._left_move(Ev(*p))
+            app._left_release(Ev(*pts[-1]))
+
+        app.set_select_mode(True)
+        left_drag(circle_loop())                                   # piece 1: the circle
+        left_drag([(620, 220), (980, 220), (980, 630), (620, 630)])  # piece 2: the line
+        app.set_select_mode(False)
+        inside = lambda i, pt: core.shape_contains(app.piece_poly(i), pt)
+
+        # Rows: small + / − under the thumbnail; the long buttons are gone
+        texts = lambda w: [c.cget("text") for c in w.winfo_children()
+                           if isinstance(c, (tk.Button, ttk.Button))]
+        assert texts(app._rows[0][6]) == ["+", "−"]
+        assert texts(app._rows[0][4]) == ["Edit…", "Save…", "✕ Remove"]
+
+        # Thumbnails sit on a checkerboard even with the Light preview background
+        app.bg_mode.set("Light")
+        rgba = app._piece_rgba(0)
+        thumb = app._preview_rgb(rgba)
+        clear = rgba[:, :, 3] == 0
+        assert set(np.unique(thumb[clear])) <= {150, 210} and len(np.unique(thumb[clear])) == 2
+
+        # Banner over the preview names the mode
+        banner = lambda: app.canvas.find_withtag("banner")
+        assert app._mode_banner_text() is None and not banner()
+        app.set_pick_mode(True)
+        assert app._mode_banner_text() == "Picking objects (Esc to stop)" and banner()
+        app.set_select_mode(True)
+        assert app._mode_banner_text() == "Selecting pieces (Esc to stop)" and banner()
+        app.set_select_mode(False)
+        assert not banner()
+        app.start_crop()
+        assert app._mode_banner_text().startswith("Cropping") and banner()
+        app.save_crop()
+        assert not banner()
+
+        # + Add area: a loop elsewhere joins the piece as a second outline
+        app._rows[0][6].winfo_children()[0].invoke()
+        assert app.edit_mode == (0, "add") and app.selected == 0
+        assert "pressed" in app._rows[0][6].winfo_children()[0].state()
+        assert app._mode_banner_text().startswith("Adding to piece 1") and banner()
+        assert str(app.canvas.cget("cursor")) == "crosshair" and not app.select_mode.get()
+        left_drag([(250, 650), (350, 650), (350, 750), (250, 750)])
+        assert len(app.pieces) == 2 and app.pieces[0].edited
+        assert inside(0, (300, 700)) and inside(0, (400, 260))
+        assert app.edit_mode == (0, "add"), "mode stays on"
+
+        # Click inside piece 2: its whole area is added, and piece 2 stays
+        left_drag([(800, 425)])
+        assert inside(0, (800, 425)) and inside(0, (630, 230)) and len(app.pieces) == 2
+        rgba = app._piece_rgba(0)
+        assert rgba.shape[1] > 600, "the saved piece spans both drawings"
+        # A click on nothing changes nothing
+        before = [c.copy() for c in app.pieces[0].poly]
+        left_drag([(150, 150)])
+        assert all(np.array_equal(a, b) for a, b in zip(before, app.pieces[0].poly))
+
+        # − Cut area: a hole in the circle's middle
+        app.toggle_edit_mode(0, "cut")
+        assert app.edit_mode == (0, "cut")
+        left_drag([(330, 330), (470, 330), (470, 470), (330, 470)])
+        assert not inside(0, (400, 400)) and inside(0, (400, 260))
+        # Cutting everything is refused
+        before = [c.copy() for c in app.pieces[0].poly]
+        left_drag([(20, 20), (1180, 20), (1180, 880), (20, 880)])
+        assert len(app.pieces[0].poly) == len(before)
+
+        # Smoothing leaves an edited piece alone
+        app.smooth.set(90)
+        app.resmooth()
+        assert all(np.array_equal(a, b) for a, b in zip(before, app.pieces[0].poly))
+
+        # Rotation keeps the edited shape attached; the editor window opens
+        app.rotate_photo(1)
+        root.update()
+        editor = app.edit_piece(0)
+        assert editor is not None
+        editor.root.destroy()
+        app.rotate_photo(-1)
+        root.update()
+        assert not inside(0, (400, 400)) and inside(0, (400, 260)) and inside(0, (300, 700))
+
+        # Esc stops; clicking the pressed button again also stops
+        app._on_escape()
+        assert app.edit_mode is None and str(app.canvas.cget("cursor")) == "fleur"
+        assert not banner()
+        app.toggle_edit_mode(1, "add")
+        app.toggle_edit_mode(1, "add")
+        assert app.edit_mode is None
+
+        # Deleting pieces keeps the target index right
+        app.toggle_edit_mode(1, "cut")
+        app.delete_piece(0)
+        assert app.edit_mode == (0, "cut")
+        app.delete_piece(0)
+        assert app.edit_mode is None
+        root.destroy()
+    print("piece add/cut ok")
+
+
 if __name__ == "__main__":
     test_pipeline()
     test_pieces()
@@ -1068,5 +1219,7 @@ if __name__ == "__main__":
     test_theme()
     test_hug_loop()
     test_pick_object()
+    test_combine_shapes()
+    test_piece_add_cut_gui()
     test_preview_keeps_thin_lines()
     print("all tests passed")
