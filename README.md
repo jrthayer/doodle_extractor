@@ -40,18 +40,22 @@ Windows apps use (Settings > Personalization > Colors), and every open window sw
 **Moving around:** drag the preview to move the image, scroll to zoom around the cursor.
 The toolbar has −, +, **Fit** and **100%**; Ctrl+0 fits, Ctrl+plus and Ctrl+minus zoom.
 
+**Not sure what a button does?** Hover over it: the status bar at the bottom says. Sliders
+explain themselves the same way, and the − / + beside each slider step it one notch (hold to
+repeat).
+
 ### Cutting out pieces
-Several drawings on one page? Click **Select piece** (above Save all), then **drag around a drawing**
+Several drawings on one page? Click **Lasso piece** (above Save all), then **drag around a drawing**
 on the preview. When you let go the loop
 closes and the drawing becomes a **piece** in the panel on the right, while the full photo stays so
 you can loop around the next one.
-- **Pick object** (above Select piece): click a drawing instead of looping it. Click one of its
+- **Auto select piece** (above Lasso piece): click a drawing instead of looping it. Click one of its
   lines, inside a solid shape, or even inside a hole like the middle of an O. Clicking just next to
   it works too. Dragging still moves the image. **Reach** sets how far it groups nearby strokes
   (pencil drawings are made of separate lines); for solid shapes it only starts grouping above 50.
   Moving Reach or Smoothing re-picks the selected piece. Drawings whose lines touch are picked
   together; loop around one of them instead.
-- **Hug the drawing** (on by default, above Select piece) pulls the loop in to the drawing's
+- **Hug the drawing** (on by default, above Lasso piece) pulls the loop in to the drawing's
   outline when you let go. Gaps between strokes are bridged, so separate parts inside one loop stay
   together. It never goes outside your loop. Untick it to keep loops exactly as you draw them.
   It finds pencil and pen lines as well as solid or colored shapes (anything that stands out from
@@ -63,7 +67,7 @@ you can loop around the next one.
   piece is the extracted ink, cropped tight to the drawing.
 - **Save…** on a row saves that piece; **Save all…** writes every piece to a folder as
   `<photo>_piece1.png`, `<photo>_piece2.png`, …
-- **Edit…** opens the piece in its own window: full-size preview, zoom, rotation and
+- **Open…** opens the piece in a new window of its own: full-size preview, zoom, rotation and
   its own settings (starting from the main window's, including whether Extract ink is on). **Save PNG** there saves the
   piece. You can open several at once.
 - **+** / **−** (under a piece's thumbnail) add to or cut from that piece's outline. With
@@ -72,9 +76,9 @@ you can loop around the next one.
   in the list). With **−** on, drag a loop around what to remove; it cuts exactly where
   you drew, and can leave holes. Both stay on so you can make several changes; Esc or clicking the
   button again stops. Once a piece has been changed this way, Smoothing and Reach leave it alone.
-- Select piece stays on so you can loop several drawings in a row. Click it again (or press
+- Lasso piece stays on so you can loop several drawings in a row. Click it again (or press
   **Esc**) to go back to moving the image; Esc while drawing cancels just that loop.
-- While a mode is on (Pick object, Select piece, + / −, Crop), a dark banner across the top of the
+- While a mode is on (Auto select piece, Lasso piece, + / −, Crop), a dark banner across the top of the
   preview says which one and how to stop it.
 - Thumbnails show transparent parts as a checkerboard, whatever the preview background is.
 - Click a row to select it (highlighted orange on the preview). **Delete** removes the selected piece.

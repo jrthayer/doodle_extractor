@@ -3,7 +3,7 @@
 Open a photo of a drawing. "Extract ink" turns it into a Godot-ready PNG
 (white lines, transparent everywhere else); without it the photo is kept as is.
 Crop, rotate, and cut out parts of the photo as separate pieces.
-Drag to move the image, scroll to zoom. "Select piece" switches the mouse to
+Drag to move the image, scroll to zoom. "Lasso piece" switches the mouse to
 drawing loops around drawings.
 """
 
@@ -35,6 +35,8 @@ CROP_COLOR = "#ff3b6b"
 EDIT_TIPS = {"add": "Add area: loop more of the drawing, or click another piece",
              "cut": "Cut area: loop what to remove from this piece"}
 BANNER_H = 34                 # mode banner height over the preview (px)
+SLIDER_TRACK = 18             # slider track thickness (Tk's default is 15)
+STEP_BTN_W = 22             # width of a slider's − / + button (px), taken from the slider
 # Colors for the classic Tk widgets (ttk widgets get theirs from the ttk theme)
 LIGHT = dict(bg="SystemButtonFace", fg="SystemButtonText", muted="#555555", canvas="#808080",
              row="#f4f4f4", row_sel="#ffe2bf", trough="SystemScrollbar",
@@ -100,6 +102,12 @@ def _configure_style(root, dark):
         style.configure("TLabelframe.Label", background=p["bg"], foreground=p["fg"])
         style.configure("TSeparator", background=p["border"])
         list_bg, list_fg = p["field"], p["fg"]
+    # Slider − / +: as short as the track, so keep only the button's frame and a
+    # centered label (no focus ring or padding eating the room)
+    frame, opts = style.layout("TButton")[0]
+    style.layout("Step.TButton", [(frame, {**{k: v for k, v in opts.items() if k != "children"},
+                                           "children": [("Button.label", {"sticky": ""})]})])
+    style.configure("Step.TButton", padding=0, font=("Segoe UI", 9, "bold"))
     # Combobox drop-down lists made from now on (existing ones are fixed per window)
     root.option_add("*TCombobox*Listbox.background", list_bg)
     root.option_add("*TCombobox*Listbox.foreground", list_fg)
@@ -149,8 +157,8 @@ class Piece:
     loop: np.ndarray = None   # the loop as drawn (original coords), to re-hug it later
     hugged: bool = False      # poly was snapped to the drawing (smoothing applies)
     smooth: int = 0           # smoothing used for poly
-    seed: np.ndarray = None   # Pick object: the clicked point (original coords)
-    reach: int = 50           # Pick object: how far it grouped nearby strokes
+    seed: np.ndarray = None   # Auto select: the clicked point (original coords)
+    reach: int = 50           # Auto select: how far it grouped nearby strokes
     edited: bool = False      # areas were added or cut: poly is a list of contours and
                               # Smoothing / Reach leave it alone
 
@@ -234,7 +242,7 @@ class DoodleApp:
         self.extract = tk.BooleanVar(value=False)      # show/save extracted ink instead of the photo
         self.hug = tk.BooleanVar(value=True)           # snap new loops to the drawing's outline
         self.smooth = tk.IntVar(value=30)              # how much hugged outlines are rounded
-        self.reach = tk.IntVar(value=50)               # Pick object: how much a click grabs
+        self.reach = tk.IntVar(value=50)               # Auto select: how much a click grabs
         self.pick_mode = tk.BooleanVar(value=False)    # left-click picks objects
         self.edit_mode = None     # (piece index, "add" | "cut"): loops change that piece
         self._pick_press = None
@@ -278,41 +286,55 @@ class DoodleApp:
     def _on_destroy(self, e):
         if e.widget is self.root and self in _APPS:
             _APPS.remove(self)
+            for name in ("_resize_job", "_refresh_job", "_rotate_job", "_repick_job",
+                         "_smooth_job", "_step_job"):   # timers would fire on a dead window
+                job = getattr(self, name, None)
+                if job:
+                    try:
+                        self.root.after_cancel(job)
+                    except tk.TclError:
+                        pass
 
     # ------------------------------------------------------------------ UI
 
     def _build_ui(self):
         bar = ttk.Frame(self.root, padding=(8, 6))
         bar.pack(side="top", fill="x")
-        ttk.Button(bar, text="Open…", command=self.open_dialog).pack(side="left")
-        ttk.Button(bar, text="Save PNG…", command=self.save_dialog).pack(side="left", padx=(6, 18))
+        tip = self._tip
+        tip(ttk.Button(bar, text="Open…", command=self.open_dialog),
+            "Open a photo (Ctrl+O)").pack(side="left")
+        tip(ttk.Button(bar, text="Save PNG…", command=self.save_dialog),
+            "Save the image, cropped and rotated, as a PNG (Ctrl+S)").pack(side="left",
+                                                                           padx=(6, 18))
 
         ttk.Label(bar, text="Preview background:").pack(side="left")
         bg = self.bg_combo = ttk.Combobox(bar, textvariable=self.bg_mode, values=BACKGROUNDS,
                                           state="readonly", width=8)
+        tip(bg, "Background behind the preview only; saved PNGs stay transparent")
         bg.pack(side="left", padx=(4, 12))
         bg.bind("<<ComboboxSelected>>", lambda e: self.schedule_refresh())
 
         ttk.Label(bar, text="Preview line color:").pack(side="left")
         self.tint_swatch = tk.Button(bar, width=3, relief="solid", bd=1,
                                      bg=self._hex(self.tint), command=self.pick_tint)
+        tip(self.tint_swatch, "Color of the lines in the preview only; saved ink is always white")
         self.tint_swatch.pack(side="left", padx=(4, 18))
 
         ttk.Label(bar, text="Zoom:").pack(side="left")
-        ttk.Button(bar, text="−", width=3,
-                   command=lambda: self.zoom_step(1 / ZOOM_STEP)).pack(side="left", padx=(4, 0))
+        tip(ttk.Button(bar, text="−", width=3, command=lambda: self.zoom_step(1 / ZOOM_STEP)),
+            "Zoom out (Ctrl+minus)").pack(side="left", padx=(4, 0))
         ttk.Label(bar, textvariable=self.zoom_text, width=6, anchor="center").pack(side="left")
-        ttk.Button(bar, text="+", width=3,
-                   command=lambda: self.zoom_step(ZOOM_STEP)).pack(side="left")
-        ttk.Button(bar, text="Fit", width=4, command=self.zoom_fit).pack(side="left", padx=4)
-        ttk.Button(bar, text="100%", width=5,
-                   command=lambda: self.zoom_to(1.0)).pack(side="left")
+        tip(ttk.Button(bar, text="+", width=3, command=lambda: self.zoom_step(ZOOM_STEP)),
+            "Zoom in (Ctrl+plus)").pack(side="left")
+        tip(ttk.Button(bar, text="Fit", width=4, command=self.zoom_fit),
+            "Fit the whole image in the window (Ctrl+0)").pack(side="left", padx=4)
+        tip(ttk.Button(bar, text="100%", width=5, command=lambda: self.zoom_to(1.0)),
+            "Show actual pixels").pack(side="left")
         # Theme switch: a moon in light mode (click for dark), a sun in dark mode
         self.theme_button = ttk.Label(bar, cursor="hand2")   # just the icon, clickable
         self.theme_button.pack(side="right", padx=(0, 4))
         self.theme_button.bind("<Button-1>", lambda e: self.toggle_theme())
-        self.theme_button.bind("<Enter>", lambda e: self._hover_tip(self.theme_tip))
-        self.theme_button.bind("<Leave>", lambda e: self._hover_tip(None))
+        tip(self.theme_button, lambda: self.theme_tip)
 
         self.status = tk.StringVar(value="Open a photo to start (Ctrl+O).")
         ttk.Label(self.root, textvariable=self.status, anchor="w",
@@ -341,8 +363,11 @@ class DoodleApp:
     def _build_settings(self, parent):
         side = ttk.Frame(parent, padding=(10, 6))
         side.pack(side="left", fill="y")
+        tip = self._tip
         self.extract_button = ttk.Button(side, text="Extract ink",
                                          command=lambda: self.set_extract(not self.extract.get()))
+        tip(self.extract_button, "Turn the drawing into white lines on transparent, "
+                                 "ready for Godot")
         self.extract_button.pack(anchor="w")
         self.extract_holder = ttk.Frame(side)   # keeps the section's place in the column
         self.extract_holder.pack(fill="x")
@@ -350,6 +375,7 @@ class DoodleApp:
 
         ttk.Separator(side).pack(fill="x", pady=10)
         self.crop_button = ttk.Button(side, text="Crop", command=self.toggle_crop)
+        tip(self.crop_button, "Show the crop box; click again to close it")
         self.crop_button.pack(anchor="w")
         self.crop_holder = ttk.Frame(side)   # keeps the crop section's place in the column
         self.crop_holder.pack(fill="x")
@@ -359,21 +385,31 @@ class DoodleApp:
         ttk.Label(side, text="Rotate photo").pack(anchor="w")
         row = ttk.Frame(side)
         row.pack(anchor="w", pady=(4, 0))
-        ttk.Button(row, text="⟲ 90°", command=lambda: self.rotate_photo(-1)).pack(side="left")
-        ttk.Button(row, text="⟳ 90°", command=lambda: self.rotate_photo(1)).pack(side="left", padx=4)
-        ttk.Button(row, text="Reset", command=self.reset_rotation).pack(side="left")
-        self._slider(side, "Straighten (degrees clockwise)", self.angle, -45, 45,
-                     lambda v: self.schedule_rotate(), resolution=0.5)
+        tip(ttk.Button(row, text="⟲ 90°", command=lambda: self.rotate_photo(-1)),
+            "Turn the photo a quarter turn left").pack(side="left")
+        tip(ttk.Button(row, text="⟳ 90°", command=lambda: self.rotate_photo(1)),
+            "Turn the photo a quarter turn right").pack(side="left", padx=4)
+        tip(ttk.Button(row, text="Reset", command=self.reset_rotation),
+            "Undo all rotation and straightening").pack(side="left")
+        self.straighten_scale = self._slider(
+            side, "Straighten (degrees clockwise)", self.angle, -45, 45,
+            lambda v: self.schedule_rotate(), resolution=0.5,
+            tip="Rotate the photo slightly to fix a tilt; exposed corners become transparent")
 
     def _build_extract_section(self, parent):
         """Ink extraction settings, shown only while Extract ink is on."""
         sec = self.extract_section = ttk.LabelFrame(parent, text="Extract ink", padding=8)
-        self._slider(sec, "Black (solid ink at or below)", self.black, 0, 255, self.on_black,
-                     length=220)
-        self._slider(sec, "White (transparent at or above)", self.white, 0, 255, self.on_white,
-                     length=220)
-        self.specks_scale = self._slider(sec, "Remove specks smaller than (px)", self.min_speck,
-                                         0, 100, lambda v: self.schedule_refresh(), length=220)
+        self.black_scale = self._slider(
+            sec, "Black (solid ink at or below)", self.black, 0, 255, self.on_black, length=220,
+            tip="Ink this dark or darker is fully solid. Raise it if line middles look gray.")
+        self.white_scale = self._slider(
+            sec, "White (transparent at or above)", self.white, 0, 255, self.on_white, length=220,
+            tip="Anything this light or lighter turns transparent. Lower it if the grid shows; "
+                "raise it if lines break.")
+        self.specks_scale = self._slider(
+            sec, "Remove specks smaller than (px)", self.min_speck, 0, 100,
+            lambda v: self.schedule_refresh(), length=220,
+            tip="Erase dots smaller than this many pixels")
         tip = ("• Grid showing? Lower White.\n"
                "• Lines broken? Raise White.\n"
                "• Line middles gray? Raise Black.\n"
@@ -383,15 +419,19 @@ class DoodleApp:
         self.tips.pack(anchor="w", pady=(10, 0))
         self.paper_check = ttk.Checkbutton(sec, text="Detect paper (ignore the desk)",
                                            variable=self.detect_paper, command=self.reprepare)
+        self._tip(self.paper_check, "Ignore the desk around the page")
         self.paper_check.pack(anchor="w", pady=(10, 0))
-        ttk.Button(sec, text="Reset sliders", command=self.reset).pack(anchor="w", pady=(8, 0))
+        self._tip(ttk.Button(sec, text="Reset sliders", command=self.reset),
+                  "Put Black, White and Remove specks back to their defaults").pack(
+            anchor="w", pady=(8, 0))
 
     def _build_crop_section(self, parent):
         """The crop settings, shown only while cropping."""
         sec = self.crop_section = ttk.LabelFrame(parent, text="Crop", padding=8)
-        ttk.Checkbutton(sec, text="Crop to the drawing", variable=self.crop_fit,
-                        command=self.on_crop_fit).grid(row=0, column=0, columnspan=4,
-                                                       sticky="w", pady=(0, 6))
+        self._tip(ttk.Checkbutton(sec, text="Crop to the drawing", variable=self.crop_fit,
+                                  command=self.on_crop_fit),
+                  "Snap the box tight to the ink and follow the sliders").grid(
+            row=0, column=0, columnspan=4, sticky="w", pady=(0, 6))
         self.crop_spins = {}
         for i, (key, label) in enumerate((("x", "X"), ("y", "Y"), ("w", "Width"), ("h", "Height"))):
             r, c = divmod(i, 2)
@@ -405,37 +445,48 @@ class DoodleApp:
             self.crop_spins[key] = sp
         btns = ttk.Frame(sec)
         btns.grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 0))
-        ttk.Button(btns, text="Save crop", command=self.save_crop).pack(side="left")
-        ttk.Button(btns, text="Reset", command=self.reset_crop).pack(side="left", padx=6)
+        self._tip(ttk.Button(btns, text="Save crop", command=self.save_crop),
+                  "Apply the crop (Enter)").pack(side="left")
+        self._tip(ttk.Button(btns, text="Reset", command=self.reset_crop),
+                  "Put the box back at the image edges").pack(side="left", padx=6)
 
     def _build_pieces_panel(self, parent):
         panel = ttk.Frame(parent, padding=(6, 6))
         panel.pack(side="right", fill="y")
         ttk.Label(panel, text="Pieces", font=("Segoe UI", 11, "bold")).pack(anchor="w")
-        hint = ttk.Label(panel, text="Pick object: click a drawing.\nSelect piece: drag around "
+        hint = ttk.Label(panel, text="Auto select: click a drawing.\nLasso: drag around "
                                      "it.\nEsc stops, Delete removes.", justify="left")
         hint.pack(anchor="w")
         self._muted.append(hint)
 
+        tip = self._tip
         btns = ttk.Frame(panel)
         btns.pack(side="bottom", fill="x", pady=(6, 0))
-        ttk.Button(btns, text="Save all…", command=self.save_all_dialog).pack(side="left")
-        ttk.Button(btns, text="Clear", command=self.clear_dialog).pack(side="left", padx=6)
-        self.select_button = ttk.Button(panel, text="Select piece",
+        tip(ttk.Button(btns, text="Save all…", command=self.save_all_dialog),
+            "Save every piece to a folder").pack(side="left")
+        tip(ttk.Button(btns, text="Clear", command=self.clear_dialog),
+            "Remove all pieces").pack(side="left", padx=6)
+        self.select_button = ttk.Button(panel, text="Lasso piece",
                                         command=lambda: self.set_select_mode(
                                             not self.select_mode.get()))
+        tip(self.select_button, "Drag a loop around a drawing to make it a piece")
         self.select_button.pack(side="bottom", fill="x", pady=(6, 0))   # just above the row
-        self.pick_button = ttk.Button(panel, text="Pick object",
+        self.pick_button = ttk.Button(panel, text="Auto select piece",
                                       command=lambda: self.set_pick_mode(not self.pick_mode.get()))
+        tip(self.pick_button, "Click a drawing to make it a piece; dragging still moves the image")
         self.pick_button.pack(side="bottom", fill="x", pady=(6, 0))
         smooth_box = ttk.Frame(panel)
         smooth_box.pack(side="bottom", fill="x")
-        self.reach_scale = self._slider(smooth_box, "Reach (Pick object)", self.reach, 0, 100,
-                                        self.schedule_repick, length=230)
-        self.smooth_scale = self._slider(smooth_box, "Smoothing",
-                                         self.smooth, 0, 100, self.schedule_resmooth, length=230)
-        ttk.Checkbutton(panel, text="Hug the drawing",
-                        variable=self.hug).pack(side="bottom", anchor="w", pady=(6, 0))
+        self.reach_scale = self._slider(
+            smooth_box, "Reach (Auto select)", self.reach, 0, 100, self.schedule_repick,
+            length=230, tip="How far Auto select groups nearby strokes into one piece "
+                            "(solid shapes: above 50)")
+        self.smooth_scale = self._slider(
+            smooth_box, "Smoothing", self.smooth, 0, 100, self.schedule_resmooth, length=230,
+            tip="How much hugged outlines are rounded out; it never cuts off ink")
+        tip(ttk.Checkbutton(panel, text="Hug the drawing", variable=self.hug),
+            "Pull each new loop in to the drawing's outline").pack(side="bottom", anchor="w",
+                                                                    pady=(6, 0))
 
         wrap = ttk.Frame(panel)
         wrap.pack(fill="both", expand=True, pady=(6, 0))
@@ -468,11 +519,64 @@ class DoodleApp:
             w = w.master
         return False
 
-    def _slider(self, parent, label, var, lo, hi, command, resolution=1, length=240):
-        ttk.Label(parent, text=label).pack(anchor="w", pady=(8, 0))
-        scale = tk.Scale(parent, from_=lo, to=hi, orient="horizontal", variable=var,
-                         length=length, command=command, resolution=resolution)
-        scale.pack(anchor="w")
+    def _slider(self, parent, label, var, lo, hi, command, resolution=1, length=240, tip=None):
+        """A labelled slider with − / + buttons that step it one notch (hold to
+        repeat). `tip` is its status-bar hint. Returns the tk.Scale; its row
+        frame is `scale.master` and its step function `scale.step(+1 | -1)`."""
+        name = ttk.Label(parent, text=label)
+        name.pack(anchor="w", pady=(8, 0))
+        row = ttk.Frame(parent)
+        row.pack(anchor="w")
+        length = max(length - 2 * STEP_BTN_W, 80)   # the buttons take the room
+        scale = tk.Scale(row, from_=lo, to=hi, orient="horizontal", variable=var,
+                         length=length, command=command, resolution=resolution,
+                         width=SLIDER_TRACK)
+
+        def step(sign):
+            old = var.get()
+            v = min(max(round((old + sign * resolution) / resolution) * resolution, lo), hi)
+            if isinstance(var, tk.IntVar):
+                v = int(v)
+            if v == old:
+                return False
+            var.set(v)
+            command(str(v))
+            return True
+
+        def press(sign):
+            release()
+            step(sign)
+            self._step_job = self.root.after(400, lambda: repeat(sign))
+
+        def repeat(sign):
+            self._step_job = self.root.after(60, lambda: repeat(sign)) if step(sign) else None
+
+        def release(_e=None):
+            if getattr(self, "_step_job", None):
+                self.root.after_cancel(self._step_job)
+            self._step_job = None
+
+        # Buttons exactly as tall as the slider's track, bottoms lined up with it
+        track = int(scale.cget("width")) + 2 * int(scale.cget("borderwidth"))
+        edge = int(scale.cget("highlightthickness"))
+        buttons, holders = [], []
+        for sign, text in ((-1, "−"), (1, "+")):
+            holder = ttk.Frame(row, width=STEP_BTN_W, height=track)
+            holder.pack_propagate(False)
+            b = ttk.Button(holder, text=text, style="Step.TButton")
+            b.pack(fill="both", expand=True)
+            b.bind("<ButtonPress-1>", lambda e, s=sign: press(s))
+            b.bind("<ButtonRelease-1>", release)
+            b.bind("<Leave>", release, add="+")
+            buttons.append(b)
+            holders.append(holder)
+        holders[0].pack(side="left", anchor="s", pady=(0, edge))
+        scale.pack(side="left")
+        holders[1].pack(side="left", anchor="s", pady=(0, edge))
+        scale.step, scale.step_buttons = step, buttons
+        if tip:
+            for w in (name, scale, *buttons):
+                self._tip(w, tip)
         self._scales.append(scale)
         return scale
 
@@ -507,13 +611,26 @@ class DoodleApp:
         set_theme(not self.dark.get())
 
     def _hover_tip(self, text):
-        """Show a button's hint in the status bar while the pointer is on it."""
+        """Show a button's hint in the status bar while the pointer is on it.
+        On leaving, the old message comes back unless something (e.g. clicking
+        the button) has put a new one there meanwhile."""
         if text:
-            self._status_before = self.status.get()
+            if getattr(self, "_tip_shown", None) is None:
+                self._status_before = self.status.get()
+            self._tip_shown = text
             self.status.set(text)
-        elif getattr(self, "_status_before", None) is not None:
-            self.status.set(self._status_before)
-            self._status_before = None
+        elif getattr(self, "_tip_shown", None) is not None:
+            if self.status.get() == self._tip_shown:
+                self.status.set(self._status_before)
+            self._tip_shown = self._status_before = None
+
+    def _tip(self, widget, text):
+        """Give `widget` a status-bar hint on hover. `text` may be a function
+        (for hints that change, like the theme icon's). Returns the widget."""
+        widget.bind("<Enter>", lambda e: self._hover_tip(text() if callable(text) else text),
+                    add="+")
+        widget.bind("<Leave>", lambda e: self._hover_tip(None), add="+")
+        return widget
 
     def _title_bar(self):
         """Dark or light window title bar (Windows 10 20H1+ / 11)."""
@@ -902,7 +1019,7 @@ class DoodleApp:
         self.render()
         self.status.set(f"Piece {i + 1} smoothing: {v}")
 
-    # ---------------------------------------------------------- pick object
+    # ---------------------------------------------------------- auto select
 
     def _pick(self, seed, reach, smooth):
         """Outline of the object at `seed` (working coords), or None."""
@@ -953,7 +1070,7 @@ class DoodleApp:
         self.status.set(f"Piece {i + 1}: reach {reach}, smoothing {smooth}")
 
     def set_pick_mode(self, on):
-        """Pick object mode: a left click picks the object under it; dragging pans."""
+        """Auto select piece mode: a left click picks the object under it; dragging pans."""
         if on and self.cropping:
             on = False
         if on and self.select_mode.get():
@@ -963,11 +1080,11 @@ class DoodleApp:
         self.pick_mode.set(on)
         self._pick_press = None
         self.pick_button.state(["pressed"] if on else ["!pressed"])
-        self.pick_button.configure(text="Picking objects (Esc to stop)" if on else "Pick object")
+        self.pick_button.configure(text="Auto selecting (Esc to stop)" if on else "Auto select piece")
         if not self.cropping:
             self.canvas.config(cursor=self._mode_cursor())
         if self.flat is not None and not self.cropping:
-            self.status.set("Pick object: click a drawing's line or a solid shape. Esc stops."
+            self.status.set("Auto select piece: click a drawing's line or a solid shape. Esc stops."
                             if on else "Drag to move, scroll to zoom.")
         self._draw_banner()
 
@@ -999,7 +1116,7 @@ class DoodleApp:
 
     def save_all_dialog(self):
         if not self.pieces:
-            messagebox.showinfo("No pieces", "Click Select piece and drag around a drawing first.",
+            messagebox.showinfo("No pieces", "Click Lasso piece and drag around a drawing, or Auto select piece and click one.",
                                 parent=self.root)
             return
         folder = filedialog.askdirectory(title="Save all pieces to…",
@@ -1033,9 +1150,7 @@ class DoodleApp:
             for op, label, tip in (("add", "+", EDIT_TIPS["add"]), ("cut", "−", EDIT_TIPS["cut"])):
                 b = ttk.Button(edit_box, text=label, width=3,
                                command=lambda i=i, op=op: self.toggle_edit_mode(i, op))
-                b.pack(side="left", padx=1)
-                b.bind("<Enter>", lambda e, tip=tip: self._hover_tip(tip))
-                b.bind("<Leave>", lambda e: self._hover_tip(None))
+                self._tip(b, tip).pack(side="left", padx=1)
                 if self.edit_mode == (i, op):
                     b.state(["pressed"])
             info = tk.Frame(row, bg=bg)
@@ -1045,10 +1160,13 @@ class DoodleApp:
             text.pack(anchor="w")
             btns = tk.Frame(info, bg=bg)
             btns.pack(anchor="w", pady=(2, 0))
-            for label, cmd in (("Edit…", self.edit_piece), ("Save…", self.save_piece_dialog),
-                               ("✕ Remove", self.delete_piece)):
-                ttk.Button(btns, text=label, width=11,
-                           command=lambda i=i, cmd=cmd: cmd(i)).pack(anchor="w", pady=(2, 0))
+            for label, cmd, tip in (
+                    ("Open…", self.edit_piece, "Open this piece in its own window to adjust it"),
+                    ("Save…", self.save_piece_dialog, "Save this piece as a PNG"),
+                    ("✕ Remove", self.delete_piece, "Delete this piece")):
+                self._tip(ttk.Button(btns, text=label, width=11,
+                                     command=lambda i=i, cmd=cmd: cmd(i)),
+                          tip).pack(anchor="w", pady=(2, 0))
             for widget in (row, thumb, text, info, btns, col, edit_box):
                 widget.bind("<Button-1>", lambda e, i=i: self.select_piece(i))
             self._rows.append((row, thumb, text, info, btns, col, edit_box))
@@ -1238,7 +1356,6 @@ class DoodleApp:
         self.status.set(f"{verb} {what} {prep} piece {i + 1}. Keep going, or press Esc.")
 
     def toggle_edit_mode(self, i, op):
-        self._status_before = None    # the button's hover hint shouldn't come back over this
         on = self.edit_mode != (i, op)
         self.set_edit_mode((i, op) if on else None)
 
@@ -1433,7 +1550,7 @@ class DoodleApp:
         self.crop_holder.configure(height=1)   # Tk keeps an emptied frame's size otherwise
         self.crop_button.state(["!pressed"])
         if not self.tips.winfo_manager():   # back under the specks slider
-            self.tips.pack(anchor="w", pady=(10, 0), after=self.specks_scale)
+            self.tips.pack(anchor="w", pady=(10, 0), after=self.specks_scale.master)
         self.canvas.config(cursor=self._mode_cursor())
         self.fit = True
         self._draw_banner()
@@ -1563,7 +1680,7 @@ class DoodleApp:
         return "crosshair" if self.select_mode.get() or self.edit_mode else "fleur"
 
     def set_select_mode(self, on):
-        """Select piece mode: left-drag draws loops. Off: left-drag pans."""
+        """Lasso piece mode: left-drag draws loops. Off: left-drag pans."""
         if on and self.cropping:     # the left button belongs to the crop box right now
             on = False
         if not on:
@@ -1574,12 +1691,12 @@ class DoodleApp:
             self.set_edit_mode(None)
         self.select_mode.set(on)
         self.select_button.state(["pressed"] if on else ["!pressed"])
-        self.select_button.configure(text="Selecting pieces (Esc to stop)" if on
-                                     else "Select piece")
+        self.select_button.configure(text="Lassoing pieces (Esc to stop)" if on
+                                     else "Lasso piece")
         if not self.cropping:
             self.canvas.config(cursor=self._mode_cursor())
         if self.flat is not None and not self.cropping:
-            self.status.set("Select piece: drag around a drawing. Esc stops." if on
+            self.status.set("Lasso piece: drag around a drawing. Esc stops." if on
                             else "Drag to move, scroll to zoom.")
         self._draw_banner()
 
@@ -1680,9 +1797,9 @@ class DoodleApp:
                 return f"Adding to piece {i + 1}: loop an area or click another piece (Esc to stop)"
             return f"Cutting from piece {i + 1}: loop what to remove (Esc to stop)"
         if self.pick_mode.get():
-            return "Picking objects (Esc to stop)"
+            return "Auto selecting pieces (Esc to stop)"
         if self.select_mode.get():
-            return "Selecting pieces (Esc to stop)"
+            return "Lassoing pieces (Esc to stop)"
         return None
 
     def _draw_banner(self):

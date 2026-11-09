@@ -561,7 +561,7 @@ def test_mouse_modes():
         assert str(app.canvas.cget("cursor")) == "fleur"
         app.zoom_fit()
 
-        # Select piece: loops make pieces, and the mode stays on
+        # Lasso piece: loops make pieces, and the mode stays on
         app.select_button.invoke()
         root.update()
         assert str(app.canvas.cget("cursor")) == "crosshair"
@@ -996,7 +996,7 @@ def test_pick_object():
     h = core.pick_object(np.zeros((600, 800), np.uint8), opic, (400, 300), 50)
     assert h is not None and covers(cv2.erode(omask, np.ones((5, 5), np.uint8)), h)
 
-    # GUI: the Pick object button, clicks, drags, Reach
+    # GUI: the Auto select piece button, clicks, drags, Reach
     class Ev:
         def __init__(self, x, y):
             self.x, self.y = int(round(x)), int(round(y))
@@ -1117,7 +1117,7 @@ def test_piece_add_cut_gui():
         texts = lambda w: [c.cget("text") for c in w.winfo_children()
                            if isinstance(c, (tk.Button, ttk.Button))]
         assert texts(app._rows[0][6]) == ["+", "−"]
-        assert texts(app._rows[0][4]) == ["Edit…", "Save…", "✕ Remove"]
+        assert texts(app._rows[0][4]) == ["Open…", "Save…", "✕ Remove"]
 
         # Thumbnails sit on a checkerboard even with the Light preview background
         app.bg_mode.set("Light")
@@ -1130,15 +1130,57 @@ def test_piece_add_cut_gui():
         banner = lambda: app.canvas.find_withtag("banner")
         assert app._mode_banner_text() is None and not banner()
         app.set_pick_mode(True)
-        assert app._mode_banner_text() == "Picking objects (Esc to stop)" and banner()
+        assert app._mode_banner_text() == "Auto selecting pieces (Esc to stop)" and banner()
         app.set_select_mode(True)
-        assert app._mode_banner_text() == "Selecting pieces (Esc to stop)" and banner()
+        assert app._mode_banner_text() == "Lassoing pieces (Esc to stop)" and banner()
         app.set_select_mode(False)
         assert not banner()
         app.start_crop()
         assert app._mode_banner_text().startswith("Cropping") and banner()
         app.save_crop()
         assert not banner()
+
+        # Hovering a button shows its hint in the status bar, and leaving puts the
+        # old message back -- unless clicking the button put a new one there
+        app.status.set("before")
+        app.select_button.event_generate("<Enter>")
+        assert app.status.get() == "Drag a loop around a drawing to make it a piece"
+        app.select_button.event_generate("<Leave>")
+        assert app.status.get() == "before"
+        app.select_button.event_generate("<Enter>")
+        app.select_button.invoke()
+        app.select_button.event_generate("<Leave>")
+        assert app.select_mode.get() and app.status.get().startswith("Lasso piece:")
+        app.set_select_mode(False)
+
+        # Slider − / + buttons step one notch and act like dragging; sliders have hints
+        b0 = app.black.get()
+        assert app.black_scale.step(1) and app.black.get() == b0 + 1
+        assert app._refresh_job is not None, "stepping Black recomputes the result"
+        assert app.black_scale.step(-1) and app.black.get() == b0
+        app.white.set(255)
+        assert not app.white_scale.step(1) and app.white.get() == 255, "stops at the end"
+        app.white.set(160)
+        app.on_white()
+        assert app.straighten_scale.step(1) and app.angle.get() == 0.5
+        assert app._rotate_job is not None
+        app.straighten_scale.step(-1)
+        assert app.angle.get() == 0.0
+        app.refresh()
+        app.status.set("before")
+        app.white_scale.event_generate("<Enter>")
+        assert app.status.get().startswith("Anything this light")
+        app.white_scale.event_generate("<Leave>")
+        assert app.status.get() == "before"
+        minus, plus = app.smooth_scale.step_buttons
+        assert minus.cget("text") == "−" and plus.cget("text") == "+"
+        root.update()
+        sc = app.smooth_scale
+        track = int(sc.cget("width")) + 2 * int(sc.cget("borderwidth"))
+        track_bottom = sc.winfo_rooty() + sc.winfo_height() - int(sc.cget("highlightthickness"))
+        for b in (minus, plus):
+            assert abs(b.winfo_height() - track) <= 1, (b.winfo_height(), track)
+            assert abs(b.winfo_rooty() + b.winfo_height() - track_bottom) <= 2
 
         # + Add area: a loop elsewhere joins the piece as a second outline
         app._rows[0][6].winfo_children()[0].invoke()
