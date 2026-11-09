@@ -16,13 +16,14 @@ from tkinter import colorchooser, filedialog, messagebox, ttk
 
 import cv2
 import numpy as np
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageTk
 
 import doodle_core as core
 
 APP_NAME = "Doodle Extractor"
 DEFAULT_WHITE = 255         # the app's White slider default (the CLI keeps 160)
 HUG_WHITE = 160             # hugging finds ink as if White were at most this
+FIT_SPECK = 30              # "Crop to the drawing" ignores dots smaller than this (px)
 IMAGE_TYPES = [("Images", "*.jpg *.jpeg *.png *.webp *.bmp *.tif *.tiff"),
                ("All files", "*.*")]
 BACKGROUNDS = ("Light", "Dark", "Checker")
@@ -107,6 +108,11 @@ def _configure_style(root, dark):
     style.configure("Opts.TLabel", background=p["pressed"])
     style.configure("Opts.TCheckbutton", background=p["pressed"])
     style.map("Opts.TCheckbutton", background=[("active", p["pressed"])])
+    # Its on/off settings are sliding switches instead of check boxes
+    style.layout("Opts.TCheckbutton", [("Checkbutton.padding", {"sticky": "nswe", "children": [
+        (_switch_element(style, root, dark), {"side": "left", "sticky": ""}),
+        ("Checkbutton.focus", {"side": "left", "sticky": "w", "children": [
+            ("Checkbutton.label", {"sticky": "nswe"})]})]})])
     list_bg, list_fg = p["field"], p["fg"]
     # Slider − / +: as short as the track, so keep only the button's frame and a
     # centered label (no focus ring or padding eating the room)
@@ -121,7 +127,6 @@ def _configure_style(root, dark):
 
 def theme_icon(master, kind, rgb, size=20):
     """A sun or moon icon as a Tk image, drawn smooth by supersampling."""
-    from PIL import ImageDraw
     k = 4
     n = size * k
     img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
@@ -145,6 +150,53 @@ def theme_icon(master, kind, rgb, size=20):
         alpha[np.array(cut) > 0] = 0
         img.putalpha(Image.fromarray(alpha))
     return ImageTk.PhotoImage(img.resize((size, size), Image.LANCZOS), master=master)
+
+
+SWITCH_W, SWITCH_H, SWITCH_GAP = 30, 16, 6   # on/off switch track size, gap before its label
+# (off track, off outline, off knob, on track, on knob) per theme; drawn on the gray
+# settings highlight ("pressed" color)
+SWITCH_COLORS = {False: ("#a8a8a8", "#8a8a8a", "#ffffff", "#3c3c3c", "#ffffff"),
+                 True: ("#3a3a3a", "#6a6a6a", "#a0a0a0", "#e6e6e6", "#333333")}
+_SWITCH_IMAGES = {}           # (Tk interpreter, theme) -> PhotoImages, kept alive for ttk
+
+
+def switch_images(master, dark):
+    """A sliding on/off switch as (off, on, off_disabled, on_disabled) images:
+    a pill track with a round knob, left and hollow-looking when off, right on
+    a filled track when on. Drawn 4x bigger and shrunk, so the curves are smooth."""
+    off_track, off_line, off_knob, on_track, on_knob = SWITCH_COLORS[dark]
+    k = 4
+    w, h = (SWITCH_W + SWITCH_GAP) * k, SWITCH_H * k
+    tw = SWITCH_W * k
+    pad = k                                   # knob inset from the track edge
+    out = []
+    for on in (False, True):
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.rounded_rectangle((0, 0, tw - 1, h - 1), radius=h // 2,
+                            fill=on_track if on else off_track,
+                            outline=None if on else off_line, width=k)
+        r = h // 2 - pad
+        cx = tw - h // 2 if on else h // 2
+        d.ellipse((cx - r, h // 2 - r, cx + r, h // 2 + r), fill=on_knob if on else off_knob)
+        out.append(img.resize((SWITCH_W + SWITCH_GAP, SWITCH_H), Image.LANCZOS))
+    for img in out[:2]:                       # dimmed copies for the disabled state
+        dim = img.copy()
+        dim.putalpha(dim.getchannel("A").point(lambda a: a // 2))
+        out.append(dim)
+    return [ImageTk.PhotoImage(img, master=master) for img in out]
+
+
+def _switch_element(style, master, dark):
+    """The ttk element that draws the switch for this theme (made once)."""
+    name = f"Switch.{'dark' if dark else 'light'}.indicator"
+    if name not in style.element_names():     # per Tk interpreter (and theme)
+        imgs = switch_images(master, dark)
+        _SWITCH_IMAGES[(id(master.tk), dark)] = imgs
+        off, on, off_dim, on_dim = imgs
+        style.element_create(name, "image", off, ("disabled", "selected", on_dim),
+                             ("disabled", off_dim), ("selected", on))
+    return name
 
 
 def set_theme(dark):
@@ -197,6 +249,7 @@ class DoodleApp:
         self.color = self.valid = None     # ... cut to the working rect
         self.flat0 = None         # full-res prepared image, unrotated
         self.mask0 = None
+        self._fit_prep = self._fit_rot = None   # paper-detected copy for crop-to-drawing
         self.rflat = None         # ... after photo rotation (full size)
         self.rmask = None
         self.alpha_full = None    # result for the current settings, full rotated size
@@ -246,7 +299,7 @@ class DoodleApp:
         self.crop_fit = tk.BooleanVar(value=False)   # "Crop to the drawing" in crop mode
         self.select_mode = tk.BooleanVar(value=False)  # left-drag draws loops instead of panning
         self.extract = tk.BooleanVar(value=False)      # show/save extracted ink instead of the photo
-        self.hug = tk.BooleanVar(value=True)           # snap new loops to the drawing's outline
+        self.hug = tk.BooleanVar(value=False)          # snap new loops to the drawing's outline
         self.smooth = tk.IntVar(value=30)              # how much hugged outlines are rounded
         self.reach = tk.IntVar(value=50)               # Auto select: how much a click grabs
         self.pick_mode = tk.BooleanVar(value=False)    # left-click picks objects
@@ -256,7 +309,7 @@ class DoodleApp:
         self._repick_job = None
         self._smooth_job = None
         self.crop_vars = {k: tk.StringVar(value="0") for k in ("x", "y", "w", "h")}
-        self.detect_paper = tk.BooleanVar(value=True)
+        self.detect_paper = tk.BooleanVar(value=False)   # every on/off switch starts off
         self.bg_mode = tk.StringVar(value="Light")
         self.zoom_text = tk.StringVar(value="")
         self.angle = tk.DoubleVar(value=0.0)        # photo straighten, degrees clockwise
@@ -792,8 +845,8 @@ class DoodleApp:
         self.black.set(d.black)
         self.white.set(DEFAULT_WHITE)
         self.min_speck.set(d.min_speck)
-        if not self.detect_paper.get() and self.bgr is not None:
-            self.detect_paper.set(True)
+        if self.detect_paper.get() and self.bgr is not None:   # back to its default: off
+            self.detect_paper.set(False)
             self.reprepare()
         self.schedule_refresh()
 
@@ -809,7 +862,7 @@ class DoodleApp:
             self.extract_body.pack_forget()
         if redraw and self.rflat is not None:
             self.refresh()
-            self.status.set("Extraction on: tune the sliders. Untick Apply extraction to show "
+            self.status.set("Extraction on: tune the sliders. Switch Apply extraction off to show "
                             "the photo." if on else "Showing the photo as is.")
 
     def toggle_extract_panel(self):
@@ -899,6 +952,7 @@ class DoodleApp:
         self.min_speck.set(settings.min_speck)
         self.pad.set(settings.pad)
         self.flat0, self.mask0 = flat, mask
+        self._fit_prep = self._fit_rot = None
         self.set_extract(extract, redraw=False)
         h, w = flat.shape
         self.status.set(f"Editing {label} of {self.path.name} ({w}×{h}). "
@@ -914,6 +968,7 @@ class DoodleApp:
             self.flat0, self.mask0 = core.prepare(self.bgr, self.detect_paper.get())
         finally:
             self._idle()
+        self._fit_prep = self._fit_rot = None    # crop-to-drawing's copy is out of date
         h, w = self.flat0.shape
         paper = "page detected" if self.mask0 is not None else "no separate page found"
         self.status.set(f"{self.path.name}: {w}×{h}, {paper}. "
@@ -1563,7 +1618,24 @@ class DoodleApp:
 
     def _ink_rect(self):
         """The drawing's bounding box plus padding (the whole image if empty)."""
-        return core.crop_box(self.alpha_full, self.pad.get()) or self._full_rect()
+        return core.crop_box(self._drawing_alpha(), self.pad.get()) or self._full_rect()
+
+    def _drawing_alpha(self):
+        """The ink that "Crop to the drawing" looks for, full rotated size. Unlike
+        the shown result it always ignores the background around the page (even
+        with Detect paper off), caps White like hugging does (so a faint grid
+        isn't drawing) and drops dust, so the box fits the drawing itself."""
+        flat, mask = self.rflat, self.rmask
+        if self.bgr is not None and not self.detect_paper.get():
+            if self._fit_prep is None:          # the photo prepared with paper detection
+                self._fit_prep = core.prepare(self.bgr, True)
+            key = (self.quarter, float(self.angle.get()))
+            if self._fit_rot is None or self._fit_rot[0] != key:
+                self._fit_rot = (key, *core.rotate_prepared(*self._fit_prep, *key))
+            flat, mask = self._fit_rot[1:]
+        s = self.settings()
+        alpha = core.make_alpha(flat, mask, s.black, max(min(s.white, HUG_WHITE), s.black + 1))
+        return core.remove_specks(alpha, max(s.min_speck, FIT_SPECK))
 
     def _target_rect(self):
         """Which part of the rotated photo is the working image right now."""

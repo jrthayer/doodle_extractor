@@ -8,16 +8,18 @@ Crops, rotates and cuts drawings out of photos. **Extract ink** turns them into 
 Run `dist\DoodleExtractor.exe` (or `python doodle_gui.py`). You can also drag a photo onto the exe.
 
 1. **Open…** (Ctrl+O): pick the photo.
-2. By default the photo is shown and saved **as is** (rotated and cropped if you did).
-   Click **Extract ink** to open its settings, then tick **Apply extraction**. The other settings
-   appear once it's ticked, and the button shows **Extract ink ✓** while extraction is applied:
+2. By default the photo is shown and saved **as is** (rotated and cropped if you did). Every
+   on/off switch in the app starts off.
+   Click **Extract ink** to open its settings, then switch on **Apply extraction**. The other settings
+   appear once it's on, and the button shows **Extract ink ✓** while extraction is applied:
    - **Black**: ink this dark or darker is fully solid.
    - **White**: anything this light or lighter is transparent. Lower it if the grid shows.
    - **Remove specks**: erases dots smaller than N pixels.
-   - **Detect paper**: ignores the background around the page.
+   - **Detect paper**: ignores the background around the page. Switch it on for photos of a page
+     on a desk or table.
    - The preview background and line color are for viewing only. The saved ink is always white.
 
-   Untick **Apply extraction** to go back to the photo; your slider values are kept for next time.
+   Switch **Apply extraction** off to go back to the photo; your slider values are kept for next time.
    Clicking **Extract ink** again only hides the settings, so extraction stays on (✓).
 3. **Save PNG…** (Ctrl+S): choose where to save the image (the cropped area, if you cropped).
 
@@ -26,7 +28,7 @@ The button stays pressed while the section is open:
 - Drag its edges or corners to resize it, or drag inside to move it. You can also type or step
   the **X / Y / Width / Height** values.
 - **Crop to the drawing** snaps the box tight to the ink and keeps following it as you
-  change the sliders. Unticking it puts the box back where it was.
+  change the sliders. Switching it off puts the box back where it was.
 - **Save crop** (Enter) applies it. Clicking **Crop** again (or Esc) also closes the section
   and keeps your changes.
 - **Reset** puts the box back at the image edges (no crop).
@@ -65,9 +67,9 @@ you can loop around the next one.
   (pencil drawings are made of separate lines); for solid shapes it only starts grouping above 50.
   Moving Reach or Smoothing re-picks the selected piece. Drawings whose lines touch are picked
   together; loop around one of them instead.
-- **Hug the drawing** (on by default) pulls the loop in to the drawing's
+- **Hug the drawing** (off until you switch it on) pulls the loop in to the drawing's
   outline when you let go. Gaps between strokes are bridged, so separate parts inside one loop stay
-  together. It never goes outside your loop. Untick it to keep loops exactly as you draw them.
+  together. It never goes outside your loop. Switch it off to keep loops exactly as you draw them.
   It finds pencil and pen lines as well as solid or colored shapes (anything that stands out from
   the background along your loop), and leaves out slivers of neighbouring drawings your loop clips.
 - **Smoothing** rounds the hugged outline out; higher is rounder. It only
@@ -82,7 +84,7 @@ you can loop around the next one.
   piece. You can open several at once.
 - **+** / **−** (under a piece's thumbnail) add to or cut from that piece's outline. With
   **+** on, drag a loop to join it to the piece (hugged to the drawing when Hug the drawing
-  is ticked), or click inside another piece to add all of that piece's area (the other piece stays
+  is on), or click inside another piece to add all of that piece's area (the other piece stays
   in the list). With **−** on, drag a loop around what to remove; it cuts exactly where
   you drew, and can leave holes. Both stay on so you can make several changes; Esc or clicking the
   button again stops. Once a piece has been changed this way, Smoothing and Reach leave it alone.

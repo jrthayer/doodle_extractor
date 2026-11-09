@@ -128,6 +128,8 @@ def test_gui():
         assert app.white.get() == 255, "the app starts with White at 255"
         app.white.set(160)             # these tests were written for White 160
         app.set_extract(True)          # these tests check extracted ink
+        app.detect_paper.set(True)     # ...and were written with paper detection on
+        app.reprepare()
         root.update()
         app.white.set(150)
         app.min_speck.set(50)
@@ -259,6 +261,8 @@ def test_rotation_gui():
         app.open_path(src)
         app.white.set(160)             # these tests were written for White 160
         app.set_extract(True)          # these tests check extracted ink
+        app.detect_paper.set(True)     # ...and were written with paper detection on
+        app.reprepare()
         root.update()
 
         app.add_piece(circle_loop())
@@ -312,6 +316,8 @@ def test_edit_piece_window():
         app.open_path(src)
         app.white.set(160)             # these tests were written for White 160
         app.set_extract(True)          # these tests check extracted ink
+        app.detect_paper.set(True)     # ...and were written with paper detection on
+        app.reprepare()
         app.white.set(150)
         app.refresh()
         app.add_piece(circle_loop())
@@ -384,6 +390,8 @@ def test_crop_tool():
         app.open_path(src)
         app.white.set(160)             # these tests were written for White 160
         app.set_extract(True)          # these tests check extracted ink
+        app.detect_paper.set(True)     # ...and were written with paper detection on
+        app.reprepare()
         root.update()
         app.add_piece(circle_loop())          # made before cropping
 
@@ -425,10 +433,10 @@ def test_crop_tool():
         before = app.edit_rect()
         app.crop_fit.set(True)
         app.on_crop_fit()
-        assert app.edit_rect() == core.crop_box(app.alpha_full, app.pad.get())
+        assert app.edit_rect() == core.crop_box(app._drawing_alpha(), app.pad.get())
         app.pad.set(30)
         app.refresh()
-        assert app.edit_rect() == core.crop_box(app.alpha_full, 30), "box tracks the ink"
+        assert app.edit_rect() == core.crop_box(app._drawing_alpha(), 30), "box tracks the ink"
         app.pad.set(0)
         app.crop_fit.set(False)
         app.on_crop_fit()
@@ -506,10 +514,10 @@ def test_crop_tool():
         app.crop_fit.set(True)
         app.on_crop_fit()
         app.save_crop()
-        assert app.crop_fit_saved and app.work_rect == core.crop_box(app.alpha_full, 0)
+        assert app.crop_fit_saved and app.work_rect == core.crop_box(app._drawing_alpha(), 0)
         app.pad.set(40)
         app.refresh()
-        assert app.work_rect == core.crop_box(app.alpha_full, 40)
+        assert app.work_rect == core.crop_box(app._drawing_alpha(), 40)
 
         # Saving the full box means no crop
         app.start_crop()
@@ -520,6 +528,47 @@ def test_crop_tool():
         assert app.flat.shape == (H, W)
         root.destroy()
     print("crop tool ok")
+
+
+def test_crop_to_drawing_defaults():
+    """With the app's defaults (Detect paper off, White 255, no extraction),
+    "Crop to the drawing" still snaps to the drawing, not the whole photo."""
+    import tkinter as tk
+    from doodle_gui import DoodleApp
+
+    bgr, ink = fake_photo()[:2]
+    x, y, w, h = cv2.boundingRect(cv2.findNonZero(ink))    # the drawing's real box
+    with tempfile.TemporaryDirectory() as d:
+        src = Path(d) / "photo.png"
+        core.save_png(src, bgr)
+        root = tk.Tk()
+        root.geometry("1300x800")
+        app = DoodleApp(root)
+        root.update()
+        app.open_path(src)
+        assert not app.detect_paper.get() and app.white.get() == 255 and not app.extract.get()
+
+        def fitted():
+            app.start_crop()
+            app.crop_fit.set(True)
+            app.on_crop_fit()
+            box = app.edit_rect()
+            app.crop_fit.set(False)
+            app.on_crop_fit()
+            app.save_crop()
+            return box
+
+        for setup in ("defaults", "paper on", "extract on"):
+            if setup == "paper on":
+                app.detect_paper.set(True)
+                app.reprepare()
+            elif setup == "extract on":
+                app.set_extract(True)
+            bx, by, bw, bh = fitted()
+            assert (abs(bx - x) <= 4 and abs(by - y) <= 4 and abs(bw - w) <= 8
+                    and abs(bh - h) <= 8), (setup, (bx, by, bw, bh), (x, y, w, h))
+        root.destroy()
+    print("crop to drawing ok")
 
 
 def test_mouse_modes():
@@ -541,6 +590,8 @@ def test_mouse_modes():
         app.open_path(src)
         app.white.set(160)             # these tests were written for White 160
         app.set_extract(True)          # these tests check extracted ink
+        app.detect_paper.set(True)     # ...and were written with paper detection on
+        app.reprepare()
         root.update()
 
         def left_drag(points):
@@ -655,7 +706,7 @@ def test_extract_toggle():
         assert app.save_path(out)
         ink = read(out)
         assert (ink[:, :, :3] == 255).all() and ink[:, :, 3].min() == 0
-        flat, mask = core.prepare(bgr)
+        flat, mask = core.prepare(bgr, app.detect_paper.get())
         assert np.array_equal(ink, core.process(flat, mask, app.settings()))
 
         # Closing the settings keeps extraction on
@@ -733,6 +784,8 @@ def test_preview_keeps_thin_lines():
         app.open_path(src)
         app.white.set(160)             # these tests were written for White 160
         app.set_extract(True)          # these tests check extracted ink
+        app.detect_paper.set(True)     # ...and were written with paper detection on
+        app.reprepare()
         root.update()
         app.zoom_fit()
         assert app.scale < 0.25, app.scale
@@ -770,6 +823,12 @@ def test_theme():
         assert (ttk.Style(root).lookup("TButton", "background", ["pressed"])
                 == DARK["pressed"])
         assert str(app.smooth_scale.cget("bg")) == DARK["pressed"], "settings highlight"
+        switch = lambda: str(ttk.Style(root).layout("Opts.TCheckbutton"))
+        assert "Switch.dark.indicator" in switch(), "on/off settings are sliding switches"
+        hug0 = app.hug.get()
+        app.hug_check.invoke()
+        assert app.hug.get() != hug0
+        app.hug_check.invoke()
         for a in (app, editor):
             assert a.dark.get() and a.canvas.cget("bg") == DARK["canvas"]
             assert str(a._opt_scales[0].cget("bg")) == DARK["pressed"]
@@ -788,6 +847,7 @@ def test_theme():
         set_theme(False)
         root.update()
         assert ttk.Style(root).theme_use() == "clam"     # recolorable, like dark mode
+        assert "Switch.light.indicator" in switch()
         assert "dark" in app.theme_tip
         assert (ttk.Style(root).lookup("TButton", "background", ["pressed"])
                 == LIGHT["pressed"])
@@ -920,7 +980,11 @@ def test_hug_loop():
         root.update()
         app.open_path(src)
         root.update()
-        assert app.hug.get() and app.white.get() == 255
+        assert not app.hug.get() and not app.detect_paper.get(), "every switch starts off"
+        assert app.white.get() == 255
+        app.hug.set(True)              # these tests are about hugging...
+        app.detect_paper.set(True)     # ...on a photo with paper detection on
+        app.reprepare()
         # White 255 brings back the faint grid; hugging must not treat it as drawing
         app.white.set(160)
         app.refresh()
@@ -1367,6 +1431,7 @@ if __name__ == "__main__":
     test_rotation_gui()
     test_edit_piece_window()
     test_crop_tool()
+    test_crop_to_drawing_defaults()
     test_mouse_modes()
     test_extract_toggle()
     test_theme()
