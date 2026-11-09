@@ -76,25 +76,25 @@ def circle_loop(cx=400, cy=400, r=190, n=60):
     return np.stack([cx + r * np.cos(t), cy + r * np.sin(t)], axis=1).astype(np.int32)
 
 
-def test_pieces():
+def test_doodles():
     bgr, ink, grid, specks, paper = fake_photo()
     flat, mask = core.prepare(bgr)
     s = core.Settings()
 
     # Loop around the circle only (the diagonal line starts at x=650)
-    piece = core.process_piece(flat, mask, s, circle_loop())
-    assert (piece[:, :, :3] == 255).all()
-    ph, pw = piece.shape[:2]
+    doodle = core.process_doodle(flat, mask, s, circle_loop())
+    assert (doodle[:, :, :3] == 255).all()
+    ph, pw = doodle.shape[:2]
     # circle: centre (400, 400), radius 150, 6px stroke -> ~306px across + 2 * 8 pad
     assert abs(pw - 322) <= 6 and abs(ph - 322) <= 6, (pw, ph)
-    assert piece[:, :, 3].max() == 255, "circle ink present"
+    assert doodle[:, :, 3].max() == 255, "circle ink present"
 
     # Loop around nothing: falls back to the loop's own bounds, fully transparent
-    empty = core.process_piece(flat, mask, s, [(150, 600), (250, 600), (250, 680), (150, 680)])
+    empty = core.process_doodle(flat, mask, s, [(150, 600), (250, 600), (250, 680), (150, 680)])
     assert empty.shape[:2] == (81, 101) and empty[:, :, 3].max() == 0, empty.shape
 
     # Loop running off the image edge doesn't crash
-    core.process_piece(flat, mask, s, [(-50, -50), (300, -50), (300, 300), (-50, 300)])
+    core.process_doodle(flat, mask, s, [(-50, -50), (300, -50), (300, 300), (-50, 300)])
 
     # Line color and background: white on transparent by default
     a = np.array([[0, 128, 255]], np.uint8)
@@ -106,7 +106,7 @@ def test_pieces():
     on_black = core.apply_background(red, (0, 0, 0))
     assert on_black[:, :, 3].tolist() == [[255, 255, 255]]
     assert on_black[0, 0, 2] == 0 and on_black[0, 2, 2] == 255 and 120 <= on_black[0, 1, 2] <= 130
-    print("pieces ok")
+    print("doodles ok")
 
 
 def test_unicode_path():
@@ -173,7 +173,7 @@ def test_gui():
         flat, mask = core.prepare(bgr)
         assert np.array_equal(saved, core.process(flat, mask, app.settings()))
 
-        # Lasso two pieces with simulated mouse drags (image -> canvas coords)
+        # Lasso two doodles with simulated mouse drags (image -> canvas coords)
         class Ev:
             def __init__(self, x, y):
                 self.x, self.y = int(x), int(y)
@@ -189,18 +189,18 @@ def test_gui():
         drag(circle_loop())
         drag([(620, 220), (980, 220), (980, 630), (620, 630)])   # around the line
         app._lasso_start(Ev(10, 10)); app._lasso_end(Ev(10, 10))  # a click: ignored
-        assert len(app.pieces) == 2, len(app.pieces)
+        assert len(app.doodles) == 2, len(app.doodles)
         root.update()
 
         p1 = Path(d) / "one.png"
-        assert app.save_piece(0, p1)
+        assert app.save_doodle(0, p1)
         one = cv2.imdecode(np.fromfile(str(p1), np.uint8), cv2.IMREAD_UNCHANGED)
         assert abs(one.shape[1] - 306) <= 8, one.shape          # circle, no margin
 
-        out_dir = Path(d) / "pieces"
+        out_dir = Path(d) / "doodles"
         out_dir.mkdir()
         written = app.save_all(out_dir)
-        assert [p.name for p in written] == ["photo_piece1.png", "photo_piece2.png"]
+        assert [p.name for p in written] == ["photo_doodle1.png", "photo_doodle2.png"]
         line = cv2.imdecode(np.fromfile(str(written[1]), np.uint8), cv2.IMREAD_UNCHANGED)
         assert abs(line.shape[1] - (300 + 8)) <= 10, line.shape   # line: 300px wide, 8px thick
 
@@ -209,12 +209,12 @@ def test_gui():
         app.vx, app.vy = 300, 300
         app._clamp_view()
         drag([(320, 320), (480, 320), (480, 480), (320, 480)])
-        poly = app.piece_poly(-1)
+        poly = app.doodle_poly(-1)
         assert abs(poly[:, 0].min() - 320) <= 1 and abs(poly[:, 1].max() - 480) <= 1, poly
 
-        app.select_piece(0)
-        app.delete_piece(0)
-        assert len(app.pieces) == 2 and app.selected == 0
+        app.select_doodle(0)
+        app.delete_doodle(0)
+        assert len(app.doodles) == 2 and app.selected == 0
         root.destroy()
     print("gui ok")
 
@@ -242,20 +242,20 @@ def test_rotation_core():
     print("rotation core ok")
 
 
-def test_piece_source():
-    """A piece loaded on its own converts the same as cutting it from the page."""
+def test_doodle_source():
+    """A doodle loaded on its own converts the same as cutting it from the page."""
     bgr = fake_photo()[0]
     flat, mask = core.prepare(bgr)
     s = core.Settings(auto_crop=True)
     loop = circle_loop()                          # circle only, not the line
 
-    sub, sub_mask = core.piece_source(flat, mask, loop)
+    sub, sub_mask = core.doodle_source(flat, mask, loop)
     assert sub.shape == (2 * 190 + 2 * 24 + 1, 2 * 190 + 2 * 24 + 1), sub.shape
     alone = core.process(sub, sub_mask, s)
-    cut = core.process_piece(flat, mask, s, loop)
+    cut = core.process_doodle(flat, mask, s, loop)
     assert abs(alone.shape[0] - cut.shape[0]) <= 2 and abs(alone.shape[1] - cut.shape[1]) <= 2
     assert sub[0, 0] == 255 and sub[-1, -1] == 255, "outside the loop is paper"
-    print("piece source ok")
+    print("doodle source ok")
 
 
 def test_rotation_gui():
@@ -278,10 +278,10 @@ def test_rotation_gui():
         app.reprepare()
         root.update()
 
-        app.add_piece(circle_loop())
+        app.add_doodle(circle_loop())
 
         def centre():
-            p = app.piece_poly(0)
+            p = app.doodle_poly(0)
             return p[:, 0].mean(), p[:, 1].mean()
 
         # Rotate the photo 90 degrees clockwise: the loop follows the circle
@@ -290,14 +290,14 @@ def test_rotation_gui():
         cx, cy = centre()
         assert abs(cx - (899 - 400)) < 2 and abs(cy - 400) < 2, (cx, cy)
         out = Path(d) / "circle.png"
-        assert app.save_piece(0, out)
+        assert app.save_doodle(0, out)
         img = cv2.imdecode(np.fromfile(str(out), np.uint8), cv2.IMREAD_UNCHANGED)
         assert abs(img.shape[0] - 306) <= 6 and abs(img.shape[1] - 306) <= 6, img.shape
 
         # Straighten slider: still the same circle
         app.angle.set(20)
         app.apply_rotation()
-        assert app.save_piece(0, out)
+        assert app.save_doodle(0, out)
         img = cv2.imdecode(np.fromfile(str(out), np.uint8), cv2.IMREAD_UNCHANGED)
         assert abs(img.shape[0] - 306) <= 8 and abs(img.shape[1] - 306) <= 8, img.shape
 
@@ -310,7 +310,7 @@ def test_rotation_gui():
     print("rotation gui ok")
 
 
-def test_edit_piece_window():
+def test_edit_doodle_window():
     import tkinter as tk
     import doodle_gui
     from doodle_gui import DoodleApp
@@ -334,47 +334,47 @@ def test_edit_piece_window():
         app.reprepare()
         app.white.set(150)
         app.refresh()
-        app.add_piece(circle_loop())
-        app.add_piece([(620, 220), (980, 220), (980, 630), (620, 630)])   # the line
+        app.add_doodle(circle_loop())
+        app.add_doodle([(620, 220), (980, 220), (980, 630), (620, 630)])   # the line
         root.update()
 
         main_out = Path(d) / "main.png"
-        assert app.save_piece(1, main_out)
+        assert app.save_doodle(1, main_out)
 
-        editor = app.edit_piece(1)
+        editor = app.edit_doodle(1)
         root.update()
-        assert editor.is_piece and isinstance(editor.root, tk.Toplevel)
-        assert "piece 2" in editor.root.title()
+        assert editor.is_doodle and isinstance(editor.root, tk.Toplevel)
+        assert "doodle 2" in editor.root.title()
         assert editor.white.get() == 150, "settings carried over"
         assert editor.crop_fit_saved, "editor starts cropped to the drawing"
         assert "disabled" in editor.paper_check.state()
         assert editor in doodle_gui._APPS and app in doodle_gui._APPS
 
-        # Saving from the editor gives the same piece as saving it from the page
+        # Saving from the editor gives the same doodle as saving it from the page
         ed_out = Path(d) / "edited.png"
         assert editor.save_path(ed_out)
         a, b = read(main_out), read(ed_out)
         assert abs(a.shape[0] - b.shape[0]) <= 2 and abs(a.shape[1] - b.shape[1]) <= 2, (a.shape, b.shape)
 
-        # The editor has its own settings and can rotate the piece
+        # The editor has its own settings and can rotate the doodle
         editor.white.set(120)
         assert app.white.get() == 150
         editor.rotate_photo(1)
         assert editor.save_path(ed_out)
         c = read(ed_out)
         assert abs(c.shape[0] - b.shape[1]) <= 2 and abs(c.shape[1] - b.shape[0]) <= 2, (b.shape, c.shape)
-        assert editor._piece_name(0) == "photo_piece2_piece1.png"
+        assert editor._doodle_name(0) == "photo_doodle2_doodle1.png"
 
         # Opening a photo in the editor turns it back into a normal window
         editor.open_path(src)
-        assert not editor.is_piece and "disabled" not in editor.paper_check.state()
+        assert not editor.is_doodle and "disabled" not in editor.paper_check.state()
 
         editor.root.destroy()
         root.update()
         assert editor not in doodle_gui._APPS and app in doodle_gui._APPS
         root.destroy()
         assert app not in doodle_gui._APPS
-    print("edit piece window ok")
+    print("edit doodle window ok")
 
 
 def test_crop_tool():
@@ -408,7 +408,7 @@ def test_crop_tool():
         app.detect_paper.set(True)     # ...and were written with paper detection on
         app.reprepare()
         root.update()
-        app.add_piece(circle_loop())          # made before cropping
+        app.add_doodle(circle_loop())          # made before cropping
 
         def drag(p0, p1):
             a, b = app.to_canvas(*p0), app.to_canvas(*p1)
@@ -444,14 +444,15 @@ def test_crop_tool():
         assert app.edit_rect()[1] + app.edit_rect()[3] == H
         assert app._crop_hit(*app.to_canvas(1150, 20)) is None, "outside the box"
 
-        # "Crop to paper" snaps to the sheet's edges; switching it off restores the box
+        # "Crop to paper" snaps to the ink box; switching it off restores the box
         before = app.edit_rect()
         app.crop_fit.set(True)
         app.on_crop_fit()
-        assert app.edit_rect() == app._paper_rect()
-        px, py, pw, ph = app._paper_rect()          # the fake sheet: (100, 80)-(1100, 820)
-        assert abs(px - 100) <= 3 and abs(py - 80) <= 3 and abs(pw - 1001) <= 6 \
-            and abs(ph - 741) <= 6, app._paper_rect()
+        assert app.edit_rect() == core.crop_box(app._drawing_alpha(), app.pad.get())
+        app.pad.set(30)
+        app.refresh()
+        assert app.edit_rect() == core.crop_box(app._drawing_alpha(), 30), "box tracks the ink"
+        app.pad.set(0)
         app.crop_fit.set(False)
         app.on_crop_fit()
         assert app.edit_rect() == before
@@ -472,10 +473,10 @@ def test_crop_tool():
         assert saved.shape == (360, 340, 4)
         assert np.array_equal(saved[:, :, 3], app.alpha_full[220:580, 230:570])
 
-        # A piece made before the crop still points at the same drawing
-        p = app.piece_poly(0)
+        # A doodle made before the crop still points at the same drawing
+        p = app.doodle_poly(0)
         assert abs(p[:, 0].mean() - (400 - 230)) < 2 and abs(p[:, 1].mean() - (400 - 220)) < 2
-        assert app.save_piece(0, out)
+        assert app.save_doodle(0, out)
         assert abs(read(out).shape[0] - 306) <= 6, read(out).shape
 
         # Reopening shows the saved box; Reset puts it back at the edges
@@ -528,11 +529,10 @@ def test_crop_tool():
         app.crop_fit.set(True)
         app.on_crop_fit()
         app.save_crop()
-        assert app.crop_fit_saved and app.work_rect == app._paper_rect()
-        app.white.set(200)                    # the sliders don't move the paper
+        assert app.crop_fit_saved and app.work_rect == core.crop_box(app._drawing_alpha(), 0)
+        app.pad.set(40)
         app.refresh()
-        assert app.work_rect == app._paper_rect()
-        app.white.set(160)
+        assert app.work_rect == core.crop_box(app._drawing_alpha(), 40)
 
         # Saving the full box means no crop
         app.start_crop()
@@ -546,14 +546,13 @@ def test_crop_tool():
 
 
 def test_crop_to_paper():
-    """"Crop to paper" snaps the box to the sheet of paper's edges, with the
-    app's defaults (Detect paper off, White 255, no detection) and otherwise;
-    with no clear sheet it uses the whole image."""
+    """With the app's defaults (Detect paper off, White 255, no detection),
+    "Crop to paper" still snaps tight to the ink, not the whole photo."""
     import tkinter as tk
     from doodle_gui import DoodleApp
 
-    bgr, ink, grid, specks, paper = fake_photo()
-    x, y, w, h = cv2.boundingRect(cv2.findNonZero(paper))    # the sheet's real box
+    bgr, ink = fake_photo()[:2]
+    x, y, w, h = cv2.boundingRect(cv2.findNonZero(ink))    # the drawing's real box
     with tempfile.TemporaryDirectory() as d:
         src = Path(d) / "photo.png"
         core.save_png(src, bgr)
@@ -581,16 +580,8 @@ def test_crop_to_paper():
             elif setup == "detection on":
                 app.set_extract(True)
             bx, by, bw, bh = fitted()
-            assert (abs(bx - x) <= 3 and abs(by - y) <= 3 and abs(bw - w) <= 6
-                    and abs(bh - h) <= 6), (setup, (bx, by, bw, bh), (x, y, w, h))
-
-        # No separate sheet (a drawing on a plain white photo): the whole image
-        plain = np.full((400, 600, 3), 250, np.uint8)
-        cv2.line(plain, (100, 100), (500, 300), (20, 20, 20), 6)
-        src2 = Path(d) / "plain.png"
-        core.save_png(src2, plain)
-        app.open_path(src2)
-        assert fitted() == (0, 0, 600, 400)
+            assert (abs(bx - x) <= 4 and abs(by - y) <= 4 and abs(bw - w) <= 8
+                    and abs(bh - h) <= 8), (setup, (bx, by, bw, bh), (x, y, w, h))
         root.destroy()
     print("crop to paper ok")
 
@@ -626,24 +617,24 @@ def test_mouse_modes():
                 app._left_move(Ev(*p))
             app._left_release(Ev(*pts[-1]))
 
-        # Default: left-drag moves the image, no pieces
+        # Default: left-drag moves the image, no doodles
         assert not app.select_mode.get() and str(app.canvas.cget("cursor")) == "fleur"
         app.zoom_to(1.0)
         vx, vy = app.vx, app.vy
         app._left_press(Ev(400, 300))
         app._left_move(Ev(300, 250))
         app._left_release(Ev(300, 250))
-        assert app.vx > vx and app.vy > vy and not app.pieces, (vx, vy, app.vx, app.vy)
+        assert app.vx > vx and app.vy > vy and not app.doodles, (vx, vy, app.vx, app.vy)
         assert str(app.canvas.cget("cursor")) == "fleur"
         app.zoom_fit()
 
-        # Lasso piece: loops make pieces, and the mode stays on
+        # Lasso doodle: loops make doodles, and the mode stays on
         app.select_button.invoke()
         root.update()
         assert str(app.canvas.cget("cursor")) == "crosshair"
         left_drag(circle_loop())
         left_drag([(620, 220), (980, 220), (980, 630), (620, 630)])
-        assert len(app.pieces) == 2 and app.select_mode.get()
+        assert len(app.doodles) == 2 and app.select_mode.get()
 
         # Esc cancels a loop in progress first, then leaves select mode
         p0 = app.to_canvas(100, 100)
@@ -652,7 +643,7 @@ def test_mouse_modes():
         app._on_escape()
         assert app._lasso is None and app.select_mode.get()
         app._left_release(Ev(p0[0] + 50, p0[1] + 50))
-        assert len(app.pieces) == 2
+        assert len(app.doodles) == 2
         app._on_escape()
         assert not app.select_mode.get() and str(app.canvas.cget("cursor")) == "fleur"
 
@@ -667,7 +658,7 @@ def test_mouse_modes():
         app._left_press(Ev(*a))
         app._left_move(Ev(*b))
         app._left_release(Ev(*b))
-        assert abs(app.edit_rect()[2] - 1000) <= 3 and len(app.pieces) == 2
+        assert abs(app.edit_rect()[2] - 1000) <= 3 and len(app.doodles) == 2
         app.reset_crop()
         app.toggle_crop()                           # full box: no crop
         assert app.crop_corners is None and str(app.canvas.cget("cursor")) == "fleur"
@@ -711,13 +702,13 @@ def test_extract_toggle():
         assert saved.shape == (900, 1200, 4) and (saved[:, :, 3] == 255).all()
         assert np.array_equal(saved[:, :, :3], bgr), "unfiltered photo"
 
-        # Raw piece: the photo inside the loop, transparent outside
-        app.add_piece(circle_loop())
-        assert app.save_piece(0, out)
-        piece = read(out)
-        assert piece.shape[:2] == (381, 381), piece.shape      # loop bounds (r=190)
-        assert piece[190, 190, 3] == 255 and piece[0, 0, 3] == 0
-        assert np.array_equal(piece[190, 190, :3], bgr[400, 400])
+        # Raw doodle: the photo inside the loop, transparent outside
+        app.add_doodle(circle_loop())
+        assert app.save_doodle(0, out)
+        doodle = read(out)
+        assert doodle.shape[:2] == (381, 381), doodle.shape      # loop bounds (r=190)
+        assert doodle[190, 190, 3] == 255 and doodle[0, 0, 3] == 0
+        assert np.array_equal(doodle[190, 190, :3], bgr[400, 400])
 
         # The button only opens the settings: just "Apply detection" until it's on
         app.white.set(150)
@@ -796,8 +787,8 @@ def test_extract_toggle():
         app.set_crop_box(0, 0, 1200, 900)
         app.save_crop()
 
-        # Editors inherit the state; an unfiltered editor shows the photo piece
-        editor = app.edit_piece(0)
+        # Editors inherit the state; an unfiltered editor shows the photo doodle
+        editor = app.edit_doodle(0)
         root.update()
         assert not editor.extract.get() and editor.white.get() == 150
         assert editor.save_path(out)
@@ -808,7 +799,7 @@ def test_extract_toggle():
         editor.root.destroy()
         app.set_extract(True)
         app.set_godot(True)
-        editor = app.edit_piece(0)
+        editor = app.edit_doodle(0)
         assert editor.extract.get() and editor.extract_button.cget("text") == "Detect lines ✓"
         assert not editor.extract_section.winfo_manager(), "its settings start closed"
         assert editor.godot and editor.tint == (255, 255, 255)
@@ -865,9 +856,9 @@ def test_theme():
         app = DoodleApp(root)
         root.update()
         app.open_path(src)
-        app.pieces.append(doodle_gui.Piece(np.array(circle_loop(), float)))
+        app.doodles.append(doodle_gui.Doodle(np.array(circle_loop(), float)))
         app._rebuild_rows()
-        editor = app.edit_piece(0)
+        editor = app.edit_doodle(0)
         root.update()
 
         set_theme(True)          # every open window switches
@@ -888,14 +879,14 @@ def test_theme():
             assert str(a._opt_scales[0].cget("bg")) == DARK["pressed"]
             assert str(a.tips.cget("foreground")) == DARK["muted"]
         assert app._rows[0][0].cget("bg") == DARK["row"]
-        app.select_piece(0)
+        app.select_doodle(0)
         assert app._rows[0][0].cget("bg") == DARK["row_sel"]
         assert app._rows[0][2].cget("fg") == DARK["fg"]
         app._rebuild_rows()       # new rows use the theme too
         assert app._rows[0][0].cget("bg") == DARK["row_sel"]
 
         # A window opened later starts dark
-        editor2 = app.edit_piece(0)
+        editor2 = app.edit_doodle(0)
         assert editor2.dark.get() and editor2.canvas.cget("bg") == DARK["canvas"]
 
         set_theme(False)
@@ -935,8 +926,8 @@ def test_hug_loop():
     area = lambda p: cv2.contourArea(p.reshape(-1, 1, 2).astype(np.float32))
     assert area(hug) < area(loop) * 0.8, (area(hug), area(loop))
     # Keeps all the ink, the inside of the ring, and stays inside the loop
-    full = core.cut_piece(alpha, loop, 0).astype(int).sum()
-    assert abs(core.cut_piece(alpha, hug, 0).astype(int).sum() - full) <= full * 0.01
+    full = core.cut_doodle(alpha, loop, 0).astype(int).sum()
+    assert abs(core.cut_doodle(alpha, hug, 0).astype(int).sum() - full) <= full * 0.01
     lp = loop.reshape(-1, 1, 2).astype(np.float32)
     assert all(cv2.pointPolygonTest(lp, (float(x), float(y)), True) >= -2 for x, y in hug)
     assert cv2.pointPolygonTest(hug.reshape(-1, 1, 2), (400.0, 400.0), False) > 0, "holes filled"
@@ -969,9 +960,9 @@ def test_hug_loop():
     t_ = np.linspace(0, 2 * np.pi, 60, endpoint=False)
     bar_loop = np.stack([265 + 170 * np.cos(t_), 285 + 190 * np.sin(t_)], 1).astype(np.int32)
     h = core.hug_loop(faint, bar_loop, color=red)
-    assert core.cut_piece(bar2, h, 0).max() == 0, "the clipped neighbour is left out"
+    assert core.cut_doodle(bar2, h, 0).max() == 0, "the clipped neighbour is left out"
     inner = cv2.erode(bar1, np.ones((5, 5), np.uint8))
-    assert core.cut_piece(inner, h, 0).astype(int).sum() >= inner.astype(int).sum() * 0.99
+    assert core.cut_doodle(inner, h, 0).astype(int).sum() >= inner.astype(int).sum() * 0.99
     assert area(h) < cv2.countNonZero(bar1) * 1.6, (area(h), cv2.countNonZero(bar1))
 
     # A solid W: its valleys stay open (traced, not bridged), at moderate smoothing too
@@ -988,7 +979,7 @@ def test_hug_loop():
         for valley in ((290, 250), (510, 250), (400, 420)):   # red, between the arms
             assert cv2.pointPolygonTest(poly, valley, False) < 0, (sm, valley)
         inner = cv2.erode(wmask, np.ones((5, 5), np.uint8))
-        assert core.cut_piece(inner, h, 0).astype(int).sum() >= inner.astype(int).sum() * 0.99
+        assert core.cut_doodle(inner, h, 0).astype(int).sum() >= inner.astype(int).sum() * 0.99
 
     # A colored object with no dark ink at all is found by its color
     pic = np.zeros((600, 800, 3), np.uint8)
@@ -1013,8 +1004,8 @@ def test_hug_loop():
     perim = lambda p: cv2.arcLength(p.reshape(-1, 1, 2), True)
     assert len(smooth) < len(rough), (len(smooth), len(rough))
     assert perim(smooth) / area(smooth) < perim(rough) / area(rough)
-    full = core.cut_piece(jag, loop, 0).astype(int).sum()
-    assert abs(core.cut_piece(jag, smooth, 0).astype(int).sum() - full) <= full * 0.01
+    full = core.cut_doodle(jag, loop, 0).astype(int).sum()
+    assert abs(core.cut_doodle(jag, smooth, 0).astype(int).sum() - full) <= full * 0.01
     assert all(cv2.pointPolygonTest(lp, (float(x), float(y)), True) >= -2 for x, y in smooth)
     t = time.perf_counter()
     core.hug_loop(np.pad(jag, ((0, 2220), (0, 2960))), loop * 3, smooth=100)  # photo-sized
@@ -1057,26 +1048,26 @@ def test_hug_loop():
             app._lasso_end(Ev(*pts[-1]))
 
         lasso(circle_loop())
-        poly = app.piece_poly(0)
+        poly = app.doodle_poly(0)
         assert area(poly) < area(loop) * 0.8 and "hugging" in app.status.get()
-        # Smoothing re-hugs the selected piece live
-        assert app.pieces[0].hugged and app.pieces[0].smooth == app.smooth.get()
+        # Smoothing re-hugs the selected doodle live
+        assert app.doodles[0].hugged and app.doodles[0].smooth == app.smooth.get()
         app.smooth.set(100)
         app.resmooth()
-        assert app.pieces[0].smooth == 100
-        drawn_loop = core.transform_points(app.R, app.pieces[0].loop).round().astype(np.int32)
+        assert app.doodles[0].smooth == 100
+        drawn_loop = core.transform_points(app.R, app.doodles[0].loop).round().astype(np.int32)
         want = core.hug_loop(app.alpha, drawn_loop, smooth=100)
-        assert np.abs(app.piece_poly(0) - want).max() <= 1, "re-hugged from the drawn loop"
+        assert np.abs(app.doodle_poly(0) - want).max() <= 1, "re-hugged from the drawn loop"
         assert "smoothing" in app.status.get()
 
         app.hug.set(False)
         lasso(circle_loop())
-        assert area(app.piece_poly(1)) > area(loop) * 0.9
-        drawn = app.piece_poly(1).copy()
+        assert area(app.doodle_poly(1)) > area(loop) * 0.9
+        drawn = app.doodle_poly(1).copy()
         app.smooth.set(0)
         app.resmooth()                          # not hugged: left alone
-        assert np.array_equal(app.piece_poly(1), drawn)
-        app.select_piece(0)                     # slider shows the piece's own value
+        assert np.array_equal(app.doodle_poly(1), drawn)
+        app.select_doodle(0)                     # slider shows the doodle's own value
         assert app.smooth.get() == 100
         root.destroy()
     print(f"hug loop ok ({ms:.0f} ms, smoothing on a photo-sized loop {ms_smooth:.0f} ms)")
@@ -1087,7 +1078,7 @@ def test_pick_object():
     from doodle_gui import DoodleApp
 
     area = lambda p: cv2.contourArea(p.reshape(-1, 1, 2).astype(np.float32))
-    covers = lambda mask, poly: (core.cut_piece(mask, poly, 0).astype(int).sum()
+    covers = lambda mask, poly: (core.cut_doodle(mask, poly, 0).astype(int).sum()
                                  >= mask.astype(int).sum() * 0.99)
 
     # Ink only (pencil-like): clicking the ring picks the ring, not the far line
@@ -1098,8 +1089,8 @@ def test_pick_object():
     ring = np.zeros_like(ink)
     cv2.circle(ring, (400, 400), 150, 255, 6)
     line = ink & ~ring
-    assert covers(ring, h) and core.cut_piece(line, h, 0).max() == 0
-    assert core.pick_object(ink, None, (600, 820), 50) is None, "nothing near: no piece"
+    assert covers(ring, h) and core.cut_doodle(line, h, 0).max() == 0
+    assert core.pick_object(ink, None, (600, 820), 50) is None, "nothing near: no doodle"
     near = core.pick_object(ink, None, (553, 400), 50)            # a few px off the line
     assert near is not None and covers(ring, near)
 
@@ -1111,7 +1102,7 @@ def test_pick_object():
     cv2.line(left, (300, 300), (300, 600), 255, 6)
     h0 = core.pick_object(two, None, (300, 450), 0)
     h100 = core.pick_object(two, None, (300, 450), 100)
-    assert core.cut_piece(two & ~left, h0, 0).max() == 0, "reach 0: one stroke"
+    assert core.cut_doodle(two & ~left, h0, 0).max() == 0, "reach 0: one stroke"
     assert covers(two, h100), "reach 100: both strokes"
 
     # A solid W on red: click inside it, on its edge, or in the red next to it
@@ -1142,7 +1133,7 @@ def test_pick_object():
     h = core.pick_object(np.zeros((600, 800), np.uint8), opic, (400, 300), 50)
     assert h is not None and covers(cv2.erode(omask, np.ones((5, 5), np.uint8)), h)
 
-    # GUI: the Auto select piece button, clicks, drags, Reach
+    # GUI: the Auto select doodle button, clicks, drags, Reach
     class Ev:
         def __init__(self, x, y):
             self.x, self.y = int(round(x)), int(round(y))
@@ -1171,26 +1162,26 @@ def test_pick_object():
             app._left_release(Ev(a[0] + dx, a[1] + dy))
 
         click(550, 400)                            # on the ring
-        assert len(app.pieces) == 1 and app.pieces[0].seed is not None
+        assert len(app.doodles) == 1 and app.doodles[0].seed is not None
         assert "picked" in app.status.get()
-        ring_poly = app.piece_poly(0)
+        ring_poly = app.doodle_poly(0)
         assert cv2.pointPolygonTest(ring_poly.reshape(-1, 1, 2), (400.0, 400.0), False) > 0
         assert cv2.pointPolygonTest(ring_poly.reshape(-1, 1, 2), (800.0, 425.0), False) < 0
-        click(300, 400, 80, 0)                     # a drag pans, no piece
-        assert len(app.pieces) == 1
+        click(300, 400, 80, 0)                     # a drag pans, no doodle
+        assert len(app.doodles) == 1
         click(100, 870)                            # off the page: nothing to pick
-        assert len(app.pieces) == 1 and "Nothing to pick" in app.status.get()
+        assert len(app.doodles) == 1 and "Nothing to pick" in app.status.get()
 
-        # Reach re-picks the selected piece; selecting restores its values
+        # Reach re-picks the selected doodle; selecting restores its values
         app.reach.set(100)
         app.repick()
-        assert app.pieces[0].reach == 100
+        assert app.doodles[0].reach == 100
         app.smooth.set(80)
         app.resmooth()
-        assert app.pieces[0].smooth == 80
+        assert app.doodles[0].smooth == 80
         app.reach.set(10)
         app.smooth.set(10)
-        app.select_piece(0)
+        app.select_doodle(0)
         assert app.reach.get() == 100 and app.smooth.get() == 80
 
         app._on_escape()
@@ -1206,7 +1197,7 @@ def test_combine_shapes():
 
     both = core.combine_shapes(sq(50, 50, 150, 150), sq(300, 50, 400, 150), "add", size)
     assert len(both) == 2
-    cut = core.cut_piece(ink, both, 0)
+    cut = core.cut_doodle(ink, both, 0)
     assert cut.shape[1] >= 350 and cut.astype(int).sum() >= 2 * 100 * 100 * 255 * 0.97
     assert core.shape_contains(both, (100, 100)) and core.shape_contains(both, (350, 100))
     assert not core.shape_contains(both, (220, 100))
@@ -1214,16 +1205,16 @@ def test_combine_shapes():
     holed = core.combine_shapes(sq(50, 50, 250, 250), sq(100, 100, 200, 200), "cut", size)
     assert len(holed) == 2, "outline plus hole"
     assert not core.shape_contains(holed, (150, 150)) and core.shape_contains(holed, (70, 70))
-    out = core.cut_piece(ink, holed, 0)        # cropped at (50, 50)
+    out = core.cut_doodle(ink, holed, 0)        # cropped at (50, 50)
     assert out[100, 100] == 0 and out[20, 20] == 255, "hole dropped, ring kept"
-    src, _ = core.piece_source(255 - ink, None, holed, margin=0)
-    assert src[100, 100] == 255 and src[20, 20] == 0, "piece editor sees the hole as paper"
+    src, _ = core.doodle_source(255 - ink, None, holed, margin=0)
+    assert src[100, 100] == 255 and src[20, 20] == 0, "doodle editor sees the hole as paper"
 
     assert core.combine_shapes(sq(100, 100, 200, 200), sq(50, 50, 250, 250), "cut", size) is None
     print("combine shapes ok")
 
 
-def test_piece_add_cut_gui():
+def test_doodle_add_cut_gui():
     import tkinter as tk
     from tkinter import ttk
     from doodle_gui import DoodleApp
@@ -1255,10 +1246,10 @@ def test_piece_add_cut_gui():
             app._left_release(Ev(*pts[-1]))
 
         app.set_select_mode(True)
-        left_drag(circle_loop())                                   # piece 1: the circle
-        left_drag([(620, 220), (980, 220), (980, 630), (620, 630)])  # piece 2: the line
+        left_drag(circle_loop())                                   # doodle 1: the circle
+        left_drag([(620, 220), (980, 220), (980, 630), (620, 630)])  # doodle 2: the line
         app.set_select_mode(False)
-        inside = lambda i, pt: core.shape_contains(app.piece_poly(i), pt)
+        inside = lambda i, pt: core.shape_contains(app.doodle_poly(i), pt)
 
         # Rows: small + / − under the thumbnail; the long buttons are gone
         texts = lambda w: [c.cget("text") for c in w.winfo_children()
@@ -1268,24 +1259,24 @@ def test_piece_add_cut_gui():
 
         # Thumbnails match the background: a checkerboard where it's transparent...
         app.bg_mode.set("Transparent")
-        rgba = app._piece_rgba(0)
+        rgba = app._doodle_rgba(0)
         thumb = app._preview_rgb(rgba)
         clear = rgba[:, :, 3] == 0
         assert set(np.unique(thumb[clear])) <= {150, 210} and len(np.unique(thumb[clear])) == 2
         # ...and the background and line color are saved into the image
         app.bg_mode.set("Black")
         app.tint = (255, 0, 0)
-        rgba = app._piece_rgba(0)
+        rgba = app._doodle_rgba(0)
         assert (rgba[:, :, 3] == 255).all(), "a solid background makes it opaque"
         assert (rgba[clear][:, :3] == 0).all(), "black where there's no ink"
         solid = cv2.erode((~clear).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
-        ink_px = rgba[solid & (app._piece_rgba(0)[:, :, 2] > 200)]
+        ink_px = rgba[solid & (app._doodle_rgba(0)[:, :, 2] > 200)]
         assert len(ink_px) and (ink_px[:, 0] < 60).all(), "red lines (saved as BGR)"
         thumb = app._preview_rgb(rgba)
         assert (thumb[clear] == 0).all(), "the thumbnail shows the black background"
         app.bg_mode.set("White")                        # the photo gets it too
         app.set_extract(False)
-        photo = app._piece_rgba(0)
+        photo = app._doodle_rgba(0)
         assert (photo[:, :, 3] == 255).all() and (photo[0, 0, :3] == 255).all()
         app.set_extract(True)
         # Custom…: OK picks the color, Cancel goes back to the previous background
@@ -1305,7 +1296,7 @@ def test_piece_add_cut_gui():
             assert app.bg_mode.get() == "Black" and not app.bg_swatch.winfo_manager()
         finally:
             doodle_gui.colorchooser.askcolor = real
-        editor = app.edit_piece(0)                      # editors save the same way
+        editor = app.edit_doodle(0)                      # editors save the same way
         assert editor.tint == (255, 0, 0) and editor.bg_mode.get() == "Black"
         editor.root.destroy()
         app.bg_mode.set("Transparent")
@@ -1316,9 +1307,9 @@ def test_piece_add_cut_gui():
         banner = lambda: app.canvas.find_withtag("banner")
         assert app._mode_banner_text() is None and not banner()
         app.set_pick_mode(True)
-        assert app._mode_banner_text() == "Auto selecting pieces (Esc to stop)" and banner()
+        assert app._mode_banner_text() == "Auto selecting doodles (Esc to stop)" and banner()
         app.set_select_mode(True)
-        assert app._mode_banner_text() == "Lassoing pieces (Esc to stop)" and banner()
+        assert app._mode_banner_text() == "Lassoing doodles (Esc to stop)" and banner()
         app.set_select_mode(False)
         assert not banner()
         app.start_crop()
@@ -1330,13 +1321,13 @@ def test_piece_add_cut_gui():
         # old message back -- unless clicking the button put a new one there
         app.status.set("before")
         app.select_button.event_generate("<Enter>")
-        assert app.status.get() == "Drag a loop around a drawing to make it a piece"
+        assert app.status.get() == "Drag a loop around a drawing to make it a doodle"
         app.select_button.event_generate("<Leave>")
         assert app.status.get() == "before"
         app.select_button.event_generate("<Enter>")
         app.select_button.invoke()
         app.select_button.event_generate("<Leave>")
-        assert app.select_mode.get() and app.status.get().startswith("Lasso piece:")
+        assert app.select_mode.get() and app.status.get().startswith("Lasso doodle:")
         app.set_select_mode(False)
 
         # Slider − / + buttons step one notch and act like dragging; sliders have hints
@@ -1401,7 +1392,7 @@ def test_piece_add_cut_gui():
             assert abs(b.winfo_height() - track) <= 1, (b.winfo_height(), track)
             assert abs(b.winfo_rooty() + b.winfo_height() - track_bottom) <= 2
 
-        # Piece settings slot above Auto select piece: fixed size, only what matters
+        # Doodle settings slot above Auto select doodle: fixed size, only what matters
         root.update()
         shown = lambda: [k for k, f in app._opt_frames.items() if f.winfo_ismapped()]
         slot_h, list_h = app.opts_frame.winfo_height(), app.list_canvas.winfo_height()
@@ -1432,26 +1423,26 @@ def test_piece_add_cut_gui():
         assert app.status.get() == "before"
         app.set_select_mode(False)
 
-        # + Add area: a loop elsewhere joins the piece as a second outline
+        # + Add area: a loop elsewhere joins the doodle as a second outline
         app._rows[0][6].winfo_children()[0].invoke()
         assert app.edit_mode == (0, "add") and app.selected == 0
         assert "pressed" in app._rows[0][6].winfo_children()[0].state()
-        assert app._mode_banner_text().startswith("Adding to piece 1") and banner()
+        assert app._mode_banner_text().startswith("Adding to doodle 1") and banner()
         assert str(app.canvas.cget("cursor")) == "crosshair" and not app.select_mode.get()
         left_drag([(250, 650), (350, 650), (350, 750), (250, 750)])
-        assert len(app.pieces) == 2 and app.pieces[0].edited
+        assert len(app.doodles) == 2 and app.doodles[0].edited
         assert inside(0, (300, 700)) and inside(0, (400, 260))
         assert app.edit_mode == (0, "add"), "mode stays on"
 
-        # Click inside piece 2: its whole area is added, and piece 2 stays
+        # Click inside doodle 2: its whole area is added, and doodle 2 stays
         left_drag([(800, 425)])
-        assert inside(0, (800, 425)) and inside(0, (630, 230)) and len(app.pieces) == 2
-        rgba = app._piece_rgba(0)
-        assert rgba.shape[1] > 600, "the saved piece spans both drawings"
+        assert inside(0, (800, 425)) and inside(0, (630, 230)) and len(app.doodles) == 2
+        rgba = app._doodle_rgba(0)
+        assert rgba.shape[1] > 600, "the saved doodle spans both drawings"
         # A click on nothing changes nothing
-        before = [c.copy() for c in app.pieces[0].poly]
+        before = [c.copy() for c in app.doodles[0].poly]
         left_drag([(150, 150)])
-        assert all(np.array_equal(a, b) for a, b in zip(before, app.pieces[0].poly))
+        assert all(np.array_equal(a, b) for a, b in zip(before, app.doodles[0].poly))
 
         # − Cut area: a hole in the circle's middle
         app.toggle_edit_mode(0, "cut")
@@ -1459,19 +1450,19 @@ def test_piece_add_cut_gui():
         left_drag([(330, 330), (470, 330), (470, 470), (330, 470)])
         assert not inside(0, (400, 400)) and inside(0, (400, 260))
         # Cutting everything is refused
-        before = [c.copy() for c in app.pieces[0].poly]
+        before = [c.copy() for c in app.doodles[0].poly]
         left_drag([(20, 20), (1180, 20), (1180, 880), (20, 880)])
-        assert len(app.pieces[0].poly) == len(before)
+        assert len(app.doodles[0].poly) == len(before)
 
-        # Smoothing leaves an edited piece alone
+        # Smoothing leaves an edited doodle alone
         app.smooth.set(90)
         app.resmooth()
-        assert all(np.array_equal(a, b) for a, b in zip(before, app.pieces[0].poly))
+        assert all(np.array_equal(a, b) for a, b in zip(before, app.doodles[0].poly))
 
         # Rotation keeps the edited shape attached; the editor window opens
         app.rotate_photo(1)
         root.update()
-        editor = app.edit_piece(0)
+        editor = app.edit_doodle(0)
         assert editor is not None
         editor.root.destroy()
         app.rotate_photo(-1)
@@ -1486,16 +1477,16 @@ def test_piece_add_cut_gui():
         app.toggle_edit_mode(1, "add")
         assert app.edit_mode is None
 
-        # Deleting pieces keeps the target index right
+        # Deleting doodles keeps the target index right
         app.toggle_edit_mode(1, "cut")
-        app.delete_piece(0)
+        app.delete_doodle(0)
         assert app.edit_mode == (0, "cut")
-        app.delete_piece(0)
+        app.delete_doodle(0)
         assert app.edit_mode is None
 
-        # The pieces list doesn't scroll when every card fits
+        # The doodles list doesn't scroll when every card fits
         lc = app.list_canvas
-        app.add_piece(circle_loop())
+        app.add_doodle(circle_loop())
         root.update()
         y0 = app._rows[0][0].winfo_rooty()
         for n in (-5, 5, -5):
@@ -1503,26 +1494,26 @@ def test_piece_add_cut_gui():
         root.update()
         assert lc.yview() == (0.0, 1.0) and app._rows[0][0].winfo_rooty() == y0
         for _ in range(8):                      # too many to fit: now it scrolls
-            app.add_piece(circle_loop())
+            app.add_doodle(circle_loop())
         root.update()
         lc.yview_scroll(5, "units")
         assert lc.yview()[0] > 0
-        app.clear_pieces()
+        app.clear_doodles()
         root.update()
         assert lc.yview()[0] == 0.0, "back at the top once the list fits again"
         root.destroy()
-    print("piece add/cut ok")
+    print("doodle add/cut ok")
 
 
 if __name__ == "__main__":
     test_pipeline()
-    test_pieces()
+    test_doodles()
     test_unicode_path()
     test_gui()
     test_rotation_core()
-    test_piece_source()
+    test_doodle_source()
     test_rotation_gui()
-    test_edit_piece_window()
+    test_edit_doodle_window()
     test_crop_tool()
     test_crop_to_paper()
     test_mouse_modes()
@@ -1531,6 +1522,6 @@ if __name__ == "__main__":
     test_hug_loop()
     test_pick_object()
     test_combine_shapes()
-    test_piece_add_cut_gui()
+    test_doodle_add_cut_gui()
     test_preview_keeps_thin_lines()
     print("all tests passed")

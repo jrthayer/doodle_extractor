@@ -3,8 +3,8 @@
 Open a photo of a drawing. "Detect lines" turns it into clean lines on a
 background (black on white by default; "Apply Godot" gives white lines on
 transparent); without it the photo is kept as is.
-Crop, rotate, and cut out parts of the photo as separate pieces.
-Drag to move the image, scroll to zoom. "Lasso piece" switches the mouse to
+Crop, rotate, and cut out parts of the photo as separate doodles.
+Drag to move the image, scroll to zoom. "Lasso doodle" switches the mouse to
 drawing loops around drawings.
 """
 
@@ -25,21 +25,20 @@ APP_NAME = "Doodle Extractor"
 DEFAULT_WHITE = 255         # the app's White slider default (the CLI keeps 160)
 HUG_WHITE = 160             # hugging finds ink as if White were at most this
 FIT_SPECK = 30              # fitting to the ink ignores dots smaller than this (px)
-PAPER_EDGE = 7              # find_paper shrinks the page by this much; Crop to paper adds it back
 IMAGE_TYPES = [("Images", "*.jpg *.jpeg *.png *.webp *.bmp *.tif *.tiff"),
                ("All files", "*.*")]
 BACKGROUNDS = ("Transparent", "White", "Black", "Custom…")   # saved into the image too
-THUMB = 96                    # piece thumbnail size (px)
+THUMB = 96                    # doodle thumbnail size (px)
 MAX_ZOOM = 8.0                # 800%: screen px per photo px
 ZOOM_STEP = 1.25
-PIECE_COLOR = "#1e90ff"
+DOODLE_COLOR = "#1e90ff"
 SELECTED_COLOR = "#ff8c00"
 CROP_COLOR = "#ff3b6b"
-EDIT_TIPS = {"add": "Add area: loop more of the drawing, or click another piece",
-             "cut": "Cut area: loop what to remove from this piece"}
+EDIT_TIPS = {"add": "Add area: loop more of the drawing, or click another doodle",
+             "cut": "Cut area: loop what to remove from this doodle"}
 BANNER_H = 34                 # mode banner height over the preview (px)
 SLIDER_TRACK = 18             # slider track thickness (Tk's default is 15)
-OPT_PADX, OPT_PADY = 8, 8     # padding inside the highlighted piece-settings slot
+OPT_PADX, OPT_PADY = 8, 8     # padding inside the highlighted doodle-settings slot
 STEP_BTN_W = 22           # width of a slider's − / + button (px), taken from the slider
 # Colors for the classic Tk widgets (ttk widgets get theirs from the ttk theme)
 LIGHT = dict(bg="SystemButtonFace", fg="SystemButtonText", muted="#555555", canvas="#808080",
@@ -53,7 +52,7 @@ DARK = dict(bg="#202020", fg="#e8e8e8", muted="#a0a0a0", canvas="#2d2d2d",
             button="#333333", hover="#3e3e3e", pressed="#555555", border="#4a4a4a",
             disabled="#777777")
 # "pressed" is also the "on" color of toggle buttons and the highlight behind the
-# piece settings that belong to them
+# doodle settings that belong to them
 _THEME = {"dark": None}       # None = not decided yet (follows Windows on first window)
 
 
@@ -105,7 +104,7 @@ def _configure_style(root, dark):
     style.configure("TLabelframe", background=p["bg"], bordercolor=p["border"])
     style.configure("TLabelframe.Label", background=p["bg"], foreground=p["fg"])
     style.configure("TSeparator", background=p["border"])
-    # The piece settings slot, highlighted in the "on" color of its button
+    # The doodle settings slot, highlighted in the "on" color of its button
     style.configure("Opts.TFrame", background=p["pressed"])
     style.configure("Opts.TLabel", background=p["pressed"])
     style.configure("Opts.TCheckbutton", background=p["pressed"])
@@ -212,7 +211,7 @@ def set_theme(dark):
 
 
 @dataclass
-class Piece:
+class Doodle:
     poly: np.ndarray      # outline in ORIGINAL photo coords (float), so it follows photo rotation
     loop: np.ndarray = None   # the loop as drawn (original coords), to re-hug it later
     hugged: bool = False      # poly was snapped to the drawing (smoothing applies)
@@ -223,7 +222,7 @@ class Piece:
                               # Smoothing / Reach leave it alone
 
 
-_APPS = []                # every open converter window (main + piece editors)
+_APPS = []                # every open converter window (main + doodle editors)
 
 
 def _dispatch_wheel(e):
@@ -236,15 +235,15 @@ def _dispatch_wheel(e):
 
 class DoodleApp:
     def __init__(self, root):
-        self.root = root      # a tk.Tk (main window) or tk.Toplevel (piece editor)
+        self.root = root      # a tk.Tk (main window) or tk.Toplevel (doodle editor)
         root.title(APP_NAME)
         root.geometry("1350x800")
         root.minsize(900, 500)
 
         self.path = None          # current photo
         self.base = None          # file-name stem for saving
-        self.is_piece = False     # True in a piece-editor window
-        self.bgr = None           # full-res photo to prepare from (None in piece editors)
+        self.is_doodle = False     # True in a doodle-editor window
+        self.bgr = None           # full-res photo to prepare from (None in doodle editors)
         self.color0 = None        # color layer, unrotated (what's shown without line detection)
         self.valid0 = None        # its alpha (None = fully opaque)
         self.rcolor = self.rvalid = None   # ... after photo rotation
@@ -260,7 +259,7 @@ class DoodleApp:
         self._rotate_job = None
 
         # The "working" image is the rotated photo cut to the saved crop (or the
-        # whole rotated photo while cropping). Previews, pieces and saving use it.
+        # whole rotated photo while cropping). Previews, doodles and saving use it.
         self.flat = self.mask = self.alpha = None
         self.work_rect = None     # (x, y, w, h) of the working image in rotated coords
         self.R = np.eye(3)        # original photo coords -> working coords
@@ -290,11 +289,11 @@ class DoodleApp:
         self._resize_job = None
         self._bg_cache = {}
 
-        self.pieces = []          # list of Piece
-        self.selected = None      # index into self.pieces
+        self.doodles = []          # list of Doodle
+        self.selected = None      # index into self.doodles
         self._lasso = None        # photo coords of the loop being drawn
         self._lasso_last = None   # last lasso point in canvas coords
-        self._rows = []           # (frame, thumb label, text label) per piece
+        self._rows = []           # (frame, thumb label, text label) per doodle
         self._thumbs = []
 
         self.black = tk.IntVar(value=80)
@@ -308,8 +307,8 @@ class DoodleApp:
         self.smooth = tk.IntVar(value=30)              # how much hugged outlines are rounded
         self.reach = tk.IntVar(value=50)               # Auto select: how much a click grabs
         self.pick_mode = tk.BooleanVar(value=False)    # left-click picks objects
-        self.edit_mode = None     # (piece index, "add" | "cut"): loops change that piece
-        self._opts_shown = None   # which piece settings the panel shows (see _show_opts)
+        self.edit_mode = None     # (doodle index, "add" | "cut"): loops change that doodle
+        self._opts_shown = None   # which doodle settings the panel shows (see _show_opts)
         self._pick_press = None
         self._repick_job = None
         self._smooth_job = None
@@ -323,7 +322,7 @@ class DoodleApp:
             _THEME["dark"] = system_prefers_dark()
         self.dark = tk.BooleanVar(value=_THEME["dark"])
         self._scales, self._muted = [], []   # classic Tk sliders / gray hint labels to recolor
-        self._opt_scales = []                # sliders on the highlighted piece settings
+        self._opt_scales = []                # sliders on the highlighted doodle settings
         _configure_style(root, _THEME["dark"])
 
         self._build_ui()
@@ -344,11 +343,11 @@ class DoodleApp:
         root.bind("<Destroy>", self._on_destroy)
 
     def _on_delete(self, _e=None):
-        """Delete key removes the selected piece, unless you're typing in a box."""
+        """Delete key removes the selected doodle, unless you're typing in a box."""
         if isinstance(self.root.focus_get(), (tk.Entry, ttk.Entry)):
             return
         if self.selected is not None:
-            self.delete_piece(self.selected)
+            self.delete_doodle(self.selected)
 
     def _on_destroy(self, e):
         if e.widget is self.root and self in _APPS:
@@ -424,7 +423,7 @@ class DoodleApp:
         body.pack(side="top", fill="both", expand=True)
 
         self._build_settings(body)
-        self._build_pieces_panel(body)
+        self._build_doodles_panel(body)
 
         self.canvas = tk.Canvas(body, bg="#808080", highlightthickness=0, cursor="fleur")
         self.canvas.pack(side="left", fill="both", expand=True)
@@ -509,7 +508,7 @@ class DoodleApp:
     def _build_extract_section(self, parent):
         """Line detection settings, shown while the Detect lines button is on.
         Apply detection turns it on; the rest only shows while it's on."""
-        # Highlighted in the "on" color of the Detect lines button, like the piece settings
+        # Highlighted in the "on" color of the Detect lines button, like the doodle settings
         sec = self.extract_section = ttk.Frame(parent, style="Opts.TFrame",
                                                padding=(10, 0, 10, 10))
         self.apply_check = self._tip(
@@ -548,11 +547,11 @@ class DoodleApp:
 
     def _build_crop_section(self, parent):
         """The crop settings, shown only while cropping."""
-        # Highlighted in the "on" color of the Crop button, like the piece settings
+        # Highlighted in the "on" color of the Crop button, like the doodle settings
         sec = self.crop_section = ttk.Frame(parent, style="Opts.TFrame", padding=10)
         self._tip(ttk.Checkbutton(sec, text="Crop to paper", variable=self.crop_fit,
                                   command=self.on_crop_fit, style="Opts.TCheckbutton"),
-                  "Snap the box to the edges of the sheet of paper").grid(
+                  "Snap the box tight to the ink and follow the sliders").grid(
             row=0, column=0, columnspan=4, sticky="w", pady=(0, 6))
         self.crop_spins = {}
         for i, (key, label) in enumerate((("x", "X"), ("y", "Y"), ("w", "Width"), ("h", "Height"))):
@@ -572,10 +571,10 @@ class DoodleApp:
         self._tip(ttk.Button(btns, text="Reset", command=self.reset_crop),
                   "Put the box back at the image edges").pack(side="left", padx=6)
 
-    def _build_pieces_panel(self, parent):
+    def _build_doodles_panel(self, parent):
         panel = ttk.Frame(parent, padding=(6, 6))
         panel.pack(side="right", fill="y")
-        ttk.Label(panel, text="Pieces", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Label(panel, text="Doodles", font=("Segoe UI", 11, "bold")).pack(anchor="w")
         hint = ttk.Label(panel, text="Auto select: click a drawing.\nLasso: drag around "
                                      "it.\nEsc stops, Delete removes.", justify="left")
         hint.pack(anchor="w")
@@ -585,20 +584,20 @@ class DoodleApp:
         btns = ttk.Frame(panel)
         btns.pack(side="bottom", fill="x", pady=(6, 0))
         tip(ttk.Button(btns, text="Save all…", command=self.save_all_dialog),
-            "Save every piece to a folder").pack(side="left")
+            "Save every doodle to a folder").pack(side="left")
         tip(ttk.Button(btns, text="Clear", command=self.clear_dialog),
-            "Remove all pieces").pack(side="left", padx=6)
-        self.select_button = ttk.Button(panel, text="Lasso piece",
+            "Remove all doodles").pack(side="left", padx=6)
+        self.select_button = ttk.Button(panel, text="Lasso doodle",
                                         command=lambda: self.set_select_mode(
                                             not self.select_mode.get()))
-        tip(self.select_button, "Drag a loop around a drawing to make it a piece")
+        tip(self.select_button, "Drag a loop around a drawing to make it a doodle")
         self.select_button.pack(side="bottom", fill="x", pady=(6, 0))   # just above the row
-        self.pick_button = ttk.Button(panel, text="Auto select piece",
+        self.pick_button = ttk.Button(panel, text="Auto select doodle",
                                       command=lambda: self.set_pick_mode(not self.pick_mode.get()))
-        tip(self.pick_button, "Click a drawing to make it a piece; dragging still moves the image")
+        tip(self.pick_button, "Click a drawing to make it a doodle; dragging still moves the image")
         self.pick_button.pack(side="bottom", fill="x", pady=(6, 0))
 
-        # Piece settings slot: always the same height (so the list doesn't jump);
+        # Doodle settings slot: always the same height (so the list doesn't jump);
         # only the settings for the current mode show in it (see _show_opts)
         self.opts_frame = ttk.Frame(panel)
         self.opts_frame.pack(side="bottom", fill="x", pady=(8, 0))
@@ -612,7 +611,7 @@ class DoodleApp:
         self.reach_scale = self._slider(
             frames["reach"], "Reach (Auto select)", self.reach, 0, 100, self.schedule_repick,
             length=230, style="Opts",
-            tip="How far Auto select groups nearby strokes into one piece "
+            tip="How far Auto select groups nearby strokes into one doodle "
                 "(solid shapes: above 50)")
         self.smooth_scale = self._slider(
             frames["smooth"], "Smoothing", self.smooth, 0, 100, self.schedule_resmooth,
@@ -636,7 +635,7 @@ class DoodleApp:
         self.list_canvas.bind("<Configure>", lambda e: self._update_list_region())
 
     def _list_overflows(self):
-        """True when the piece cards are taller than the visible list."""
+        """True when the doodle cards are taller than the visible list."""
         box = self.list_canvas.bbox("all")
         return box is not None and box[3] > self.list_canvas.winfo_height()
 
@@ -650,7 +649,7 @@ class DoodleApp:
             self.list_canvas.yview_moveto(0)
 
     def _wheel(self, e):
-        """Mouse wheel: zoom over the preview, scroll over the pieces list.
+        """Mouse wheel: zoom over the preview, scroll over the doodles list.
         Returns True if the pointer was over this window's widgets."""
         try:
             w = self.root.winfo_containing(e.x_root, e.y_root)
@@ -709,7 +708,7 @@ class DoodleApp:
         """A labelled slider with − / + buttons that step it one notch (hold to
         repeat). `tip` is its status-bar hint. Returns the tk.Scale; its row
         frame is `scale.master` and its step function `scale.step(+1 | -1)`.
-        `style="Opts"` puts it on the highlighted piece-settings background."""
+        `style="Opts"` puts it on the highlighted doodle-settings background."""
         frame_style = f"{style}.TFrame" if style else "TFrame"
         name = ttk.Label(parent, text=label, style=f"{style}.TLabel" if style else "TLabel")
         name.pack(anchor="w", pady=(8, 0))
@@ -765,7 +764,7 @@ class DoodleApp:
         for scale in self._scales:
             scale.configure(bg=p["bg"], fg=p["fg"], troughcolor=p["trough"],
                             activebackground=p["active"], highlightbackground=p["bg"])
-        for scale in self._opt_scales:      # on the highlighted piece settings
+        for scale in self._opt_scales:      # on the highlighted doodle settings
             scale.configure(bg=p["pressed"], fg=p["fg"], troughcolor=p["trough"],
                             activebackground=p["hover"], highlightbackground=p["pressed"])
         for label in self._muted:
@@ -830,7 +829,7 @@ class DoodleApp:
             bg = p["row_sel"] if j == self.selected else p["row"]
             for widget in widgets:
                 widget.configure(bg=bg)
-            widgets[2].configure(fg=p["fg"])   # the "Piece N" label
+            widgets[2].configure(fg=p["fg"])   # the "Doodle N" label
 
     def _show_hint(self):
         self.canvas.delete("all")
@@ -980,8 +979,8 @@ class DoodleApp:
     # ---------------------------------------------------------- open / save
 
     def open_dialog(self):
-        if self.pieces and not messagebox.askyesno(
-                "Open another photo?", "This clears the current pieces. Continue?",
+        if self.doodles and not messagebox.askyesno(
+                "Open another photo?", "This clears the current doodles. Continue?",
                 parent=self.root):
             return
         initial = str(self.path.parent) if self.path else None
@@ -999,7 +998,7 @@ class DoodleApp:
             self._idle()
             messagebox.showerror("Couldn't open image", f"{p}\n\n{e}", parent=self.root)
             return False
-        self.path, self.base, self.is_piece = p, p.stem, False
+        self.path, self.base, self.is_doodle = p, p.stem, False
         self.color0, self.valid0 = self.bgr, None
         self.root.title(f"{APP_NAME}: {p.name}")
         self.paper_check.state(["!disabled"])
@@ -1008,7 +1007,7 @@ class DoodleApp:
         return True
 
     def _reset_for_new_image(self, fit_crop):
-        self.clear_pieces()
+        self.clear_doodles()
         self._leave_crop_mode()
         self.crop_corners, self.crop_fit_saved = None, fit_crop
         self.work_rect = None
@@ -1018,10 +1017,10 @@ class DoodleApp:
 
     def load_prepared(self, flat, mask, path, base, settings, label,
                       color=None, valid=None, extract=True):
-        """Load an already-prepared image (a piece from another window).
+        """Load an already-prepared image (a doodle from another window).
         `color`/`valid` are the matching unfiltered photo and its alpha."""
         self.bgr = None                     # nothing to re-prepare from
-        self.path, self.base, self.is_piece = Path(path), base, True
+        self.path, self.base, self.is_doodle = Path(path), base, True
         if color is None:                   # no photo given: show the prepared gray
             color = cv2.cvtColor(flat, cv2.COLOR_GRAY2BGR)
         self.color0, self.valid0 = color, valid
@@ -1037,7 +1036,7 @@ class DoodleApp:
         self.set_extract(extract, redraw=False)
         h, w = flat.shape
         self.status.set(f"Editing {label} of {self.path.name} ({w}×{h}). "
-                        "Save PNG saves this piece.")
+                        "Save PNG saves this doodle.")
         self.apply_rotation()
 
     def reprepare(self):
@@ -1116,7 +1115,7 @@ class DoodleApp:
     def save_dialog(self):
         if not self._ready():
             return
-        name = f"{self.base}.png" if self.is_piece else f"{self.base}_ink.png"
+        name = f"{self.base}.png" if self.is_doodle else f"{self.base}_ink.png"
         p = filedialog.asksaveasfilename(
             title="Save ink PNG", defaultextension=".png",
             filetypes=[("PNG image", "*.png")],
@@ -1139,12 +1138,12 @@ class DoodleApp:
             rgba = core.color_rgba(self.color, self.valid)
         return core.apply_background(rgba, self._bg_rgb())
 
-    def _piece_rgba(self, i):
-        poly = self.piece_poly(i)
+    def _doodle_rgba(self, i):
+        poly = self.doodle_poly(i)
         if self.extract.get():
-            rgba = core.to_rgba(core.cut_piece(self.alpha, poly, self.pad.get()), self.tint)
+            rgba = core.to_rgba(core.cut_doodle(self.alpha, poly, self.pad.get()), self.tint)
         else:
-            rgba = core.color_piece(self.color, self.valid, poly)
+            rgba = core.color_doodle(self.color, self.valid, poly)
         return core.apply_background(rgba, self._bg_rgb())
 
     def _write(self, p, make_rgba):
@@ -1169,38 +1168,38 @@ class DoodleApp:
     def _idle(self):
         self.root.config(cursor="")
 
-    # --------------------------------------------------------------- pieces
+    # --------------------------------------------------------------- doodles
 
-    def _piece_name(self, i):
-        return f"{self.base}_piece{i + 1}.png"
+    def _doodle_name(self, i):
+        return f"{self.base}_doodle{i + 1}.png"
 
-    def piece_poly(self, i):
-        """Piece i's loop in current (rotated) photo coords. For an edited piece,
+    def doodle_poly(self, i):
+        """Doodle i's loop in current (rotated) photo coords. For an edited doodle,
         a list of contours (outlines and holes)."""
-        poly = self.pieces[i].poly
+        poly = self.doodles[i].poly
         if isinstance(poly, list):
             return [core.transform_points(self.R, c).round().astype(np.int32) for c in poly]
         return core.transform_points(self.R, poly).round().astype(np.int32)
 
-    def add_piece(self, polygon, loop=None, hugged=False, smooth=0):
+    def add_doodle(self, polygon, loop=None, hugged=False, smooth=0):
         """Add a loop given in current (rotated) photo coords. `loop` is the loop
         as drawn when `polygon` is its hugged outline."""
         orig = core.transform_points(self.Rinv, polygon)
         raw = None if loop is None else core.transform_points(self.Rinv, loop)
-        self.pieces.append(Piece(orig, raw, hugged, smooth))
-        self.selected = len(self.pieces) - 1
+        self.doodles.append(Doodle(orig, raw, hugged, smooth))
+        self.selected = len(self.doodles) - 1
         self._rebuild_rows()
         self._update_rows()
         self.render()
         return self.selected
 
-    def edit_piece(self, i):
-        """Open piece i in its own converter window, with full-size preview,
+    def edit_doodle(self, i):
+        """Open doodle i in its own converter window, with full-size preview,
         rotation and its own settings. Returns the new window's app."""
         if not self._ready():
             return None
-        poly = self.piece_poly(i)
-        flat, mask = core.piece_source(self.flat, self.mask, poly)
+        poly = self.doodle_poly(i)
+        flat, mask = core.doodle_source(self.flat, self.mask, poly)
         color, valid = core.color_source(self.color, self.valid, poly)   # same box
         win = tk.Toplevel(self.root)
         editor = DoodleApp(win)
@@ -1214,48 +1213,48 @@ class DoodleApp:
         editor._bg_prev = mode
         editor.tint_swatch.configure(bg=self._hex(tint))
         editor.bg_swatch.configure(bg=self._hex(self.bg_custom))
-        editor.load_prepared(flat, mask, self.path, self._piece_name(i)[:-4],
-                             self.settings(), f"piece {i + 1}",
+        editor.load_prepared(flat, mask, self.path, self._doodle_name(i)[:-4],
+                             self.settings(), f"doodle {i + 1}",
                              color=color, valid=valid, extract=self.extract.get())
         if self.godot:
             editor.set_godot(True)
         return editor
 
-    def delete_piece(self, i):
+    def delete_doodle(self, i):
         if self.edit_mode:
             j, op = self.edit_mode
             if j == i:
                 self.set_edit_mode(None)
             elif j > i:
                 self.edit_mode = (j - 1, op)
-        del self.pieces[i]
+        del self.doodles[i]
         if self.selected is not None:
             if self.selected == i:
-                self.selected = min(i, len(self.pieces) - 1) if self.pieces else None
+                self.selected = min(i, len(self.doodles) - 1) if self.doodles else None
             elif self.selected > i:
                 self.selected -= 1
         self._rebuild_rows()
         self._update_rows()
         self.render()
 
-    def clear_pieces(self):
+    def clear_doodles(self):
         if self.edit_mode:
             self.set_edit_mode(None)
-        self.pieces, self.selected = [], None
+        self.doodles, self.selected = [], None
         self._rebuild_rows()
 
     def clear_dialog(self):
-        if self.pieces and messagebox.askyesno("Clear pieces", "Remove all pieces?",
+        if self.doodles and messagebox.askyesno("Clear doodles", "Remove all doodles?",
                                                parent=self.root):
-            self.clear_pieces()
+            self.clear_doodles()
             self.render()
 
-    def select_piece(self, i):
+    def select_doodle(self, i):
         self.selected = i
-        if self.pieces[i].hugged:     # show its smoothing (setting the var doesn't re-smooth)
-            self.smooth.set(self.pieces[i].smooth)
-        if self.pieces[i].seed is not None:
-            self.reach.set(self.pieces[i].reach)
+        if self.doodles[i].hugged:     # show its smoothing (setting the var doesn't re-smooth)
+            self.smooth.set(self.doodles[i].smooth)
+        if self.doodles[i].seed is not None:
+            self.reach.set(self.doodles[i].reach)
         self._color_rows()
         self.render()
 
@@ -1273,27 +1272,27 @@ class DoodleApp:
         self._smooth_job = self.root.after(80, self.resmooth)
 
     def resmooth(self):
-        """Re-hug the selected piece with the current Smoothing value."""
+        """Re-hug the selected doodle with the current Smoothing value."""
         self._smooth_job = None
         i = self.selected
-        if i is None or i >= len(self.pieces) or self.alpha is None:
+        if i is None or i >= len(self.doodles) or self.alpha is None:
             return
-        piece, v = self.pieces[i], self.smooth.get()
-        if piece.edited:
+        doodle, v = self.doodles[i], self.smooth.get()
+        if doodle.edited:
             return
-        if piece.seed is not None:
+        if doodle.seed is not None:
             self.repick(smooth_only=True)
             return
-        if not piece.hugged or piece.loop is None:
+        if not doodle.hugged or doodle.loop is None:
             return
-        loop = core.transform_points(self.R, piece.loop).round().astype(np.int32)
+        loop = core.transform_points(self.R, doodle.loop).round().astype(np.int32)
         hugged = core.hug_loop(self._hug_alpha(), loop, smooth=v, color=self.color)
         if hugged is None:
             return
-        piece.poly, piece.smooth = core.transform_points(self.Rinv, hugged), v
+        doodle.poly, doodle.smooth = core.transform_points(self.Rinv, hugged), v
         self._update_rows()
         self.render()
-        self.status.set(f"Piece {i + 1} smoothing: {v}")
+        self.status.set(f"Doodle {i + 1} smoothing: {v}")
 
     # ---------------------------------------------------------- auto select
 
@@ -1302,7 +1301,7 @@ class DoodleApp:
         return core.pick_object(self._hug_alpha(), self.color, seed, reach, smooth)
 
     def pick_at(self, x, y):
-        """Pick the object at (x, y) in working coords and add it as a piece."""
+        """Pick the object at (x, y) in working coords and add it as a doodle."""
         if self.alpha is None:
             return None
         self._flush()
@@ -1311,11 +1310,11 @@ class DoodleApp:
         if poly is None:
             self.status.set("Nothing to pick there; click on a line or shape.")
             return None
-        i = self.add_piece(poly, hugged=True, smooth=smooth)
-        piece = self.pieces[i]
-        piece.seed = core.transform_points(self.Rinv, np.array([[x, y]], float))[0]
-        piece.reach = reach
-        self.status.set(f"Added piece {i + 1} (picked by click). Reach adjusts how much it "
+        i = self.add_doodle(poly, hugged=True, smooth=smooth)
+        doodle = self.doodles[i]
+        doodle.seed = core.transform_points(self.Rinv, np.array([[x, y]], float))[0]
+        doodle.reach = reach
+        self.status.set(f"Added doodle {i + 1} (picked by click). Reach adjusts how much it "
                         "grabs.")
         return i
 
@@ -1325,28 +1324,28 @@ class DoodleApp:
         self._repick_job = self.root.after(80, self.repick)
 
     def repick(self, smooth_only=False):
-        """Re-pick the selected picked piece with the current Reach / Smoothing."""
+        """Re-pick the selected picked doodle with the current Reach / Smoothing."""
         self._repick_job = None
         i = self.selected
-        if i is None or i >= len(self.pieces) or self.alpha is None:
+        if i is None or i >= len(self.doodles) or self.alpha is None:
             return
-        piece = self.pieces[i]
-        if piece.seed is None or piece.edited:
+        doodle = self.doodles[i]
+        if doodle.seed is None or doodle.edited:
             return
-        reach = piece.reach if smooth_only else self.reach.get()
+        reach = doodle.reach if smooth_only else self.reach.get()
         smooth = self.smooth.get()
-        seed = core.transform_points(self.R, piece.seed[None])[0]
+        seed = core.transform_points(self.R, doodle.seed[None])[0]
         poly = self._pick(seed, reach, smooth)
         if poly is None:
             return
-        piece.poly = core.transform_points(self.Rinv, poly)
-        piece.reach, piece.smooth = reach, smooth
+        doodle.poly = core.transform_points(self.Rinv, poly)
+        doodle.reach, doodle.smooth = reach, smooth
         self._update_rows()
         self.render()
-        self.status.set(f"Piece {i + 1}: reach {reach}, smoothing {smooth}")
+        self.status.set(f"Doodle {i + 1}: reach {reach}, smoothing {smooth}")
 
     def set_pick_mode(self, on):
-        """Auto select piece mode: a left click picks the object under it; dragging pans."""
+        """Auto select doodle mode: a left click picks the object under it; dragging pans."""
         if on and self.cropping:
             on = False
         if on and self.select_mode.get():
@@ -1356,50 +1355,50 @@ class DoodleApp:
         self.pick_mode.set(on)
         self._pick_press = None
         self.pick_button.state(["pressed"] if on else ["!pressed"])
-        self.pick_button.configure(text="Auto selecting (Esc to stop)" if on else "Auto select piece")
+        self.pick_button.configure(text="Auto selecting (Esc to stop)" if on else "Auto select doodle")
         if not self.cropping:
             self.canvas.config(cursor=self._mode_cursor())
         if self.flat is not None and not self.cropping:
-            self.status.set("Auto select piece: click a drawing's line or a solid shape. Esc stops."
+            self.status.set("Auto select doodle: click a drawing's line or a solid shape. Esc stops."
                             if on else "Drag to move, scroll to zoom.")
         self._draw_overlays()
 
-    def save_piece(self, i, p):
+    def save_doodle(self, i, p):
         if not self._ready():
             return False
-        return self._write(p, lambda: self._piece_rgba(i))
+        return self._write(p, lambda: self._doodle_rgba(i))
 
-    def save_piece_dialog(self, i):
+    def save_doodle_dialog(self, i):
         p = filedialog.asksaveasfilename(
-            title=f"Save piece {i + 1}", defaultextension=".png",
+            title=f"Save doodle {i + 1}", defaultextension=".png",
             filetypes=[("PNG image", "*.png")], parent=self.root,
-            initialdir=str(self.path.parent), initialfile=self._piece_name(i))
+            initialdir=str(self.path.parent), initialfile=self._doodle_name(i))
         if p:
-            self.save_piece(i, p)
+            self.save_doodle(i, p)
 
     def save_all(self, folder):
-        """Save every piece into `folder`; returns the written paths."""
+        """Save every doodle into `folder`; returns the written paths."""
         folder = Path(folder)
         written = []
-        for i in range(len(self.pieces)):
-            p = folder / self._piece_name(i)
-            if not self.save_piece(i, p):
+        for i in range(len(self.doodles)):
+            p = folder / self._doodle_name(i)
+            if not self.save_doodle(i, p):
                 break
             written.append(p)
         if written:
-            self.status.set(f"Saved {len(written)} piece(s) to {folder}")
+            self.status.set(f"Saved {len(written)} doodle(s) to {folder}")
         return written
 
     def save_all_dialog(self):
-        if not self.pieces:
-            messagebox.showinfo("No pieces", "Click Lasso piece and drag around a drawing, or Auto select piece and click one.",
+        if not self.doodles:
+            messagebox.showinfo("No doodles", "Click Lasso doodle and drag around a drawing, or Auto select doodle and click one.",
                                 parent=self.root)
             return
-        folder = filedialog.askdirectory(title="Save all pieces to…",
+        folder = filedialog.askdirectory(title="Save all doodles to…",
                                          initialdir=str(self.path.parent), parent=self.root)
         if not folder:
             return
-        existing = [n for n in (self._piece_name(i) for i in range(len(self.pieces)))
+        existing = [n for n in (self._doodle_name(i) for i in range(len(self.doodles)))
                     if (Path(folder) / n).exists()]
         if existing and not messagebox.askyesno(
                 "Overwrite?", f"{len(existing)} file(s) already exist, e.g. {existing[0]}.\n"
@@ -1410,12 +1409,12 @@ class DoodleApp:
     def _rebuild_rows(self):
         for child in self.list_inner.winfo_children():
             child.destroy()
-        if not self.pieces:     # Tk keeps an emptied frame's size otherwise
+        if not self.doodles:     # Tk keeps an emptied frame's size otherwise
             self.list_inner.configure(height=1)
         self._rows, self._thumbs = [], []
         if not hasattr(self, "_blank"):  # sizes empty thumbnails in pixels, not characters
             self._blank = tk.PhotoImage(width=THUMB, height=THUMB)
-        for i in range(len(self.pieces)):
+        for i in range(len(self.doodles)):
             bg = palette()["row_sel"] if i == self.selected else palette()["row"]
             row = tk.Frame(self.list_inner, bg=bg, padx=4, pady=4)
             row.pack(fill="x", pady=2)
@@ -1433,20 +1432,20 @@ class DoodleApp:
                     b.state(["pressed"])
             info = tk.Frame(row, bg=bg)
             info.pack(side="left", fill="both", expand=True, padx=(6, 0))
-            text = tk.Label(info, text=f"Piece {i + 1}", bg=bg, fg=palette()["fg"],
+            text = tk.Label(info, text=f"Doodle {i + 1}", bg=bg, fg=palette()["fg"],
                             anchor="w", justify="left")
             text.pack(anchor="w")
             btns = tk.Frame(info, bg=bg)
             btns.pack(anchor="w", pady=(2, 0))
             for label, cmd, tip in (
-                    ("Open…", self.edit_piece, "Open this piece in its own window to adjust it"),
-                    ("Save…", self.save_piece_dialog, "Save this piece as a PNG"),
-                    ("✕ Remove", self.delete_piece, "Delete this piece")):
+                    ("Open…", self.edit_doodle, "Open this doodle in its own window to adjust it"),
+                    ("Save…", self.save_doodle_dialog, "Save this doodle as a PNG"),
+                    ("✕ Remove", self.delete_doodle, "Delete this doodle")):
                 self._tip(ttk.Button(btns, text=label, width=11,
                                      command=lambda i=i, cmd=cmd: cmd(i)),
                           tip).pack(anchor="w", pady=(2, 0))
             for widget in (row, thumb, text, info, btns, col, edit_box):
-                widget.bind("<Button-1>", lambda e, i=i: self.select_piece(i))
+                widget.bind("<Button-1>", lambda e, i=i: self.select_doodle(i))
             self._rows.append((row, thumb, text, info, btns, col, edit_box))
             self._thumbs.append(None)
         # An emptied list doesn't always send <Configure>; fix the scroll region now
@@ -1454,11 +1453,11 @@ class DoodleApp:
         self._update_list_region()
 
     def _update_rows(self):
-        """Refresh piece thumbnails and sizes from the current result."""
+        """Refresh doodle thumbnails and sizes from the current result."""
         if self.alpha is None:
             return
-        for i in range(min(len(self.pieces), len(self._rows))):
-            out = self._piece_rgba(i)
+        for i in range(min(len(self.doodles), len(self._rows))):
+            out = self._doodle_rgba(i)
             h, w = out.shape[:2]
             k = min(THUMB / w, THUMB / h)
             small = cv2.resize(out, (max(int(w * k), 1), max(int(h * k), 1)),
@@ -1467,7 +1466,7 @@ class DoodleApp:
             thumb, text = self._rows[i][1:3]
             thumb.configure(image=img, width=THUMB, height=THUMB)
             self._thumbs[i] = img
-            text.configure(text=f"Piece {i + 1}\n{w}×{h} px")
+            text.configure(text=f"Doodle {i + 1}\n{w}×{h} px")
 
     # ---------------------------------------------------------- coordinates
 
@@ -1584,18 +1583,18 @@ class DoodleApp:
         note, v = "", self.smooth.get()
         hugged = core.hug_loop(self._hug_alpha(), pts, smooth=v, color=self.color) if self.hug.get() else None
         if hugged is not None:
-            i = self.add_piece(hugged, loop=pts, hugged=True, smooth=v)
+            i = self.add_doodle(hugged, loop=pts, hugged=True, smooth=v)
             note = " (hugging the drawing)"
         else:
             if self.hug.get():
                 note = " (no ink found inside the loop, kept as drawn)"
-            i = self.add_piece(pts, loop=pts)
-        self.status.set(f"Added piece {i + 1}{note}. Drag around another drawing, or save.")
+            i = self.add_doodle(pts, loop=pts)
+        self.status.set(f"Added doodle {i + 1}{note}. Drag around another drawing, or save.")
 
     def _edit_with_loop(self, pts):
-        """+ Add area / − Cut area: change the target piece with the loop just
-        drawn (working coords). In add mode, a click inside another piece adds
-        that piece's whole area."""
+        """+ Add area / − Cut area: change the target doodle with the loop just
+        drawn (working coords). In add mode, a click inside another doodle adds
+        that doodle's whole area."""
         i, op = self.edit_mode
         if not pts:
             return
@@ -1605,13 +1604,13 @@ class DoodleApp:
             if op != "add":
                 return
             x, y = pts[-1]
-            hits = [j for j in range(len(self.pieces))
-                    if j != i and core.shape_contains(self.piece_poly(j), (x, y))]
+            hits = [j for j in range(len(self.doodles))
+                    if j != i and core.shape_contains(self.doodle_poly(j), (x, y))]
             if not hits:
-                self.status.set("Click inside another piece, or drag a loop around an area.")
+                self.status.set("Click inside another doodle, or drag a loop around an area.")
                 return
             j = hits[-1]                     # the one drawn on top
-            other, what = self.piece_poly(j), f"piece {j + 1}"
+            other, what = self.doodle_poly(j), f"doodle {j + 1}"
         else:
             loop = np.array(pts, np.float32)
             loop[:, 0] = loop[:, 0].clip(0, w - 1)
@@ -1623,26 +1622,26 @@ class DoodleApp:
                                        color=self.color)
                 if hugged is not None:
                     other, what = hugged, "the drawing in the loop"
-        result = core.combine_shapes(self.piece_poly(i), other, op, (h, w))
+        result = core.combine_shapes(self.doodle_poly(i), other, op, (h, w))
         if result is None:
-            self.status.set("That would remove the whole piece; use ✕ Remove to delete it.")
+            self.status.set("That would remove the whole doodle; use ✕ Remove to delete it.")
             return
-        piece = self.pieces[i]
-        piece.poly = [core.transform_points(self.Rinv, c.astype(np.float64)) for c in result]
-        piece.edited, piece.loop, piece.seed = True, None, None
+        doodle = self.doodles[i]
+        doodle.poly = [core.transform_points(self.Rinv, c.astype(np.float64)) for c in result]
+        doodle.edited, doodle.loop, doodle.seed = True, None, None
         self._update_rows()
         self.render()
         verb = "Added" if op == "add" else "Cut"
         prep = "to" if op == "add" else "from"
-        self.status.set(f"{verb} {what} {prep} piece {i + 1}. Keep going, or press Esc.")
+        self.status.set(f"{verb} {what} {prep} doodle {i + 1}. Keep going, or press Esc.")
 
     def toggle_edit_mode(self, i, op):
         on = self.edit_mode != (i, op)
         self.set_edit_mode((i, op) if on else None)
 
     def set_edit_mode(self, mode):
-        """mode = (piece index, "add" | "cut"), or None to stop. While on,
-        left-drag draws loops that change that piece."""
+        """mode = (doodle index, "add" | "cut"), or None to stop. While on,
+        left-drag draws loops that change that doodle."""
         if mode and (self.cropping or self.flat is None):
             mode = None
         self._lasso_cancel()
@@ -1660,9 +1659,9 @@ class DoodleApp:
             self.canvas.config(cursor=self._mode_cursor())
         if mode:
             i, op = mode
-            self.status.set(f"Adding to piece {i + 1}: drag a loop, or click another piece. "
+            self.status.set(f"Adding to doodle {i + 1}: drag a loop, or click another doodle. "
                             "Esc stops." if op == "add" else
-                            f"Cutting from piece {i + 1}: drag a loop around what to remove. "
+                            f"Cutting from doodle {i + 1}: drag a loop around what to remove. "
                             "Esc stops.")
         elif self.flat is not None and not self.cropping:
             self.status.set("Drag to move, scroll to zoom.")
@@ -1701,8 +1700,8 @@ class DoodleApp:
         if self.rflat is None:
             return
         self.alpha_full = core.finish_alpha(self.rflat, self.rmask, self.settings())
-        if self.cropping and self.crop_fit.get():   # box follows the paper (or ink)
-            self._set_edit_rect(self._fit_rect())
+        if self.cropping and self.crop_fit.get():   # box follows the ink
+            self._set_edit_rect(self._ink_rect())
         self._set_work_rect(self._target_rect())
         self._update_rows()
         self.render()
@@ -1714,20 +1713,6 @@ class DoodleApp:
     def _ink_rect(self):
         """The drawing's bounding box plus padding (the whole image if empty)."""
         return core.crop_box(self._drawing_alpha(), self.pad.get()) or self._full_rect()
-
-    def _fit_rect(self):
-        """Where "Crop to paper" puts the box: the sheet of paper in a photo; in a
-        piece editor (already one piece on plain paper) the piece's ink."""
-        return self._ink_rect() if self.bgr is None else self._paper_rect()
-
-    def _paper_rect(self):
-        """The detected sheet of paper's box (the whole image if there's no clear
-        sheet), whatever the Detect paper switch says."""
-        mask = self._paper_prepared()[1]
-        if mask is None:
-            self.status.set("No separate page found: Crop to paper uses the whole image.")
-            return self._full_rect()
-        return core.crop_box(mask, PAPER_EDGE) or self._full_rect()
 
     def _paper_prepared(self):
         """The photo prepared WITH paper detection, rotated like the view:
@@ -1742,9 +1727,10 @@ class DoodleApp:
         return self._fit_rot[1:]
 
     def _drawing_alpha(self):
-        """The ink fitting looks for (piece editors start trimmed to it), full
-        rotated size. It ignores the background around the page, caps White like
-        hugging does (so a faint grid isn't drawing) and drops dust."""
+        """The ink that "Crop to paper" fits the box around, full rotated size.
+        Unlike the shown result it always ignores the background around the page
+        (even with Detect paper off), caps White like hugging does (so a faint
+        grid isn't drawing) and drops dust, so the box fits the drawing itself."""
         flat, mask = self._paper_prepared()
         s = self.settings()
         alpha = core.make_alpha(flat, mask, s.black, max(min(s.white, HUG_WHITE), s.black + 1))
@@ -1755,7 +1741,7 @@ class DoodleApp:
         if self.cropping:
             return self._full_rect()
         if self.crop_fit_saved:
-            return self._fit_rect()
+            return self._ink_rect()
         if self.crop_corners is not None:
             h, w = self.rflat.shape
             return core.rect_from_corners(self.Rrot, self.crop_corners, (w, h))
@@ -1806,7 +1792,7 @@ class DoodleApp:
         if self.crop_fit_saved:
             self.crop_fit.set(True)
             self._fit_backup = self._corners(full)
-            self.edit_corners = self._corners(self._fit_rect())
+            self.edit_corners = self._corners(self._ink_rect())
         else:
             self.crop_fit.set(False)
             self._fit_backup = None
@@ -1851,8 +1837,7 @@ class DoodleApp:
         self._leave_crop_mode()
         self.refresh()
         if self.crop_fit_saved:
-            self.status.set("Cropped to the drawing." if self.bgr is None
-                            else "Cropped to the paper.")
+            self.status.set("Cropped to the ink (follows the sliders).")
         elif self.crop_corners is None:
             self.status.set("No crop: using the whole image.")
         else:
@@ -1894,7 +1879,7 @@ class DoodleApp:
             return
         if self.crop_fit.get():
             self._fit_backup = self.edit_corners.copy()
-            self._set_edit_rect(self._fit_rect())
+            self._set_edit_rect(self._ink_rect())
         elif self._fit_backup is not None:
             self.edit_corners, self._fit_backup = self._fit_backup, None
             self._sync_spins()
@@ -1998,7 +1983,7 @@ class DoodleApp:
         return "crosshair" if self.select_mode.get() or self.edit_mode else "fleur"
 
     def set_select_mode(self, on):
-        """Lasso piece mode: left-drag draws loops. Off: left-drag pans."""
+        """Lasso doodle mode: left-drag draws loops. Off: left-drag pans."""
         if on and self.cropping:     # the left button belongs to the crop box right now
             on = False
         if not on:
@@ -2009,12 +1994,12 @@ class DoodleApp:
             self.set_edit_mode(None)
         self.select_mode.set(on)
         self.select_button.state(["pressed"] if on else ["!pressed"])
-        self.select_button.configure(text="Lassoing pieces (Esc to stop)" if on
-                                     else "Lasso piece")
+        self.select_button.configure(text="Lassoing doodles (Esc to stop)" if on
+                                     else "Lasso doodle")
         if not self.cropping:
             self.canvas.config(cursor=self._mode_cursor())
         if self.flat is not None and not self.cropping:
-            self.status.set("Lasso piece: drag around a drawing. Esc stops." if on
+            self.status.set("Lasso doodle: drag around a drawing. Esc stops." if on
                             else "Drag to move, scroll to zoom.")
         self._draw_overlays()
 
@@ -2098,7 +2083,7 @@ class DoodleApp:
         return out.astype(np.uint8)
 
     def _preview_rgb(self, bgra):
-        """A saved BGRA image as a piece thumbnail. It already has the line color
+        """A saved BGRA image as a doodle thumbnail. It already has the line color
         and background in it; a (fine) checkerboard shows only where it's
         transparent."""
         h, w = bgra.shape[:2]
@@ -2112,12 +2097,12 @@ class DoodleApp:
         if self.edit_mode:
             i, op = self.edit_mode
             if op == "add":
-                return f"Adding to piece {i + 1}: loop an area or click another piece (Esc to stop)"
-            return f"Cutting from piece {i + 1}: loop what to remove (Esc to stop)"
+                return f"Adding to doodle {i + 1}: loop an area or click another doodle (Esc to stop)"
+            return f"Cutting from doodle {i + 1}: loop what to remove (Esc to stop)"
         if self.pick_mode.get():
-            return "Auto selecting pieces (Esc to stop)"
+            return "Auto selecting doodles (Esc to stop)"
         if self.select_mode.get():
-            return "Lassoing pieces (Esc to stop)"
+            return "Lassoing doodles (Esc to stop)"
         return None
 
     def _draw_banner(self):
@@ -2138,10 +2123,10 @@ class DoodleApp:
         self._draw_banner()
         self._show_opts()
 
-    # -------------------------------------------------------- piece settings
+    # -------------------------------------------------------- doodle settings
 
     def _visible_opts(self):
-        """Which piece options matter in the current mode (none = no box)."""
+        """Which doodle options matter in the current mode (none = no box)."""
         if self.cropping or self.flat is None:
             return []
         if self.edit_mode:
@@ -2153,8 +2138,8 @@ class DoodleApp:
         return []
 
     def _show_opts(self):
-        """Show only the piece settings that matter right now in their slot
-        above Auto select piece (the slot keeps its size, so nothing jumps)."""
+        """Show only the doodle settings that matter right now in their slot
+        above Auto select doodle (the slot keeps its size, so nothing jumps)."""
         if not hasattr(self, "_opt_frames"):
             return
         keys = self._visible_opts()
@@ -2223,12 +2208,12 @@ class DoodleApp:
         px, py = self.to_canvas(x0, y0)
         self.canvas.create_image(round(px), round(py), anchor="nw", image=self._photo)
 
-        for i in range(len(self.pieces)):
-            poly = self.piece_poly(i)
+        for i in range(len(self.doodles)):
+            poly = self.doodle_poly(i)
             contours = [(c - (self.vx, self.vy)) * s
                         for c in (poly if isinstance(poly, list) else [poly])]
             sel = i == self.selected
-            color = SELECTED_COLOR if sel else PIECE_COLOR
+            color = SELECTED_COLOR if sel else DOODLE_COLOR
             for pts in contours:
                 self.canvas.create_polygon(pts.ravel().tolist(), outline=color, fill="",
                                            width=3 if sel else 2)

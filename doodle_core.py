@@ -267,7 +267,7 @@ def finish_alpha(flat, mask, s: Settings):
 
 
 def _contours(shape):
-    """A piece shape as a list of int32 (N, 1, 2) contours. A shape is either
+    """A doodle shape as a list of int32 (N, 1, 2) contours. A shape is either
     one polygon ((N, 2) points) or a list of contours (outlines and holes),
     as made by `combine_shapes`."""
     if isinstance(shape, (list, tuple)) and len(shape) and np.ndim(shape[0]) >= 2:
@@ -309,7 +309,7 @@ def shape_contains(shape, pt):
     return n % 2 == 1
 
 
-def cut_piece(alpha, polygon, pad):
+def cut_doodle(alpha, polygon, pad):
     """Keep only the ink inside `polygon` (list of (x, y) points, or a list of
     contours), cropped to that ink plus `pad`. The edge is anti-aliased."""
     H, W = alpha.shape
@@ -341,14 +341,14 @@ def cut_piece(alpha, polygon, pad):
     return cut[y:y + h, x:x + w]
 
 
-def process_piece(flat, mask, s: Settings, polygon):
-    """Output image for one lassoed piece."""
-    return to_rgba(cut_piece(finish_alpha(flat, mask, s), polygon, s.pad))
+def process_doodle(flat, mask, s: Settings, polygon):
+    """Output image for one lassoed doodle."""
+    return to_rgba(cut_doodle(finish_alpha(flat, mask, s), polygon, s.pad))
 
 
-def piece_source(flat, mask, polygon, margin=24):
+def doodle_source(flat, mask, polygon, margin=24):
     """A prepared image containing only the inside of `polygon`, for editing
-    a piece on its own. Outside the loop becomes plain paper (255), with a
+    a doodle on its own. Outside the loop becomes plain paper (255), with a
     soft edge; `margin` px of paper is kept around the loop's bounds.
     Returns (flat, mask) like `prepare`."""
     bounds = _loop_bounds(flat.shape[:2], polygon, margin)
@@ -627,7 +627,7 @@ def hug_loop(alpha, polygon, ink=64, smooth=0, color=None, only=None):
         keep = np.r_[False, areas >= 0.005 * areas.max()]
         work = np.where(keep[labels], 255, 0).astype(np.uint8)
 
-    # Solid shapes (a filled letter, a painted object) are already one piece:
+    # Solid shapes (a filled letter, a painted object) are already one doodle:
     # trace them as they are, so notches like a W's valleys survive.
     solid = False
     for g in (0, 1, 2, 4, 6):
@@ -688,7 +688,7 @@ def color_rgba(bgr, valid):
 
 
 def color_source(bgr, valid, polygon, margin=24):
-    """The color counterpart of `piece_source`: the same box, with alpha =
+    """The color counterpart of `doodle_source`: the same box, with alpha =
     inside the loop (soft edge) and inside the image. Returns (bgr, valid)."""
     bounds = _loop_bounds(bgr.shape[:2], polygon, margin)
     if bounds is None:
@@ -698,8 +698,8 @@ def color_source(bgr, valid, polygon, margin=24):
     return bgr[y0:y1, x0:x1].copy(), sub_valid
 
 
-def color_piece(bgr, valid, polygon):
-    """A lassoed piece of the color photo as BGRA: transparent outside the
+def color_doodle(bgr, valid, polygon):
+    """A lassoed doodle of the color photo as BGRA: transparent outside the
     loop, cropped to the loop's bounds."""
     sub, sub_valid = color_source(bgr, valid, polygon, margin=0)
     return color_rgba(sub, sub_valid)

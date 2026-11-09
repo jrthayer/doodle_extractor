@@ -27,7 +27,7 @@ Run `dist\DoodleExtractor.exe` (or `python doodle_gui.py`). You can also drag a 
    **Background** (in the toolbar) is saved too: **White** (the default), **Black**, **Transparent**
    (shown as a checkerboard) or **Custom…** (pick any color; the swatch next to it changes it). A
    solid background makes the saved PNG opaque. It applies to the photo as well, filling corners
-   exposed by straightening and the area outside a piece's loop.
+   exposed by straightening and the area outside a doodle's loop.
 
    Switch **Apply detection** off to go back to the photo; your slider values are kept for next
    time. Clicking **Detect lines** again only hides the settings, so detection stays on (✓).
@@ -37,17 +37,17 @@ Run `dist\DoodleExtractor.exe` (or `python doodle_gui.py`). You can also drag a 
 The button stays pressed while the section is open:
 - Drag its edges or corners to resize it, or drag inside to move it. You can also type or step
   the **X / Y / Width / Height** values.
-- **Crop to paper** snaps the box to the edges of the sheet of paper in the photo (whether or not
-  Detect paper is on). If there's no clear sheet it uses the whole image. Switching it off puts
-  the box back where it was.
+- **Crop to paper** snaps the box tight to the ink on the paper (the background around the page
+  is ignored even with Detect paper off) and keeps following it as you change the sliders.
+  Switching it off puts the box back where it was.
 - **Save crop** (Enter) applies it. Clicking **Crop** again (or Esc) also closes the section
   and keeps your changes.
 - **Reset** puts the box back at the image edges (no crop).
 - Opening **Crop** again later shows the box where you left it, so you can widen it back out.
-- The crop follows the photo when you rotate it. Piece editor windows start cropped to the drawing.
+- The crop follows the photo when you rotate it. Doodle editor windows start cropped to the drawing.
 
 **Rotate** opens the rotation settings: ⟲ 90° / ⟳ 90° for sideways photos, and **Straighten**
-(−45° to +45°) for a slight tilt. Corners exposed by straightening are transparent. Pieces stay
+(−45° to +45°) for a slight tilt. Corners exposed by straightening are transparent. Doodles stay
 attached to their drawings. Click **Rotate** again to hide the settings; the rotation stays.
 
 **Detect lines**, **Crop** and **Rotate** sit side by side at the top left. Each opens its
@@ -64,19 +64,19 @@ The toolbar has −, +, **Fit** and **100%**; Ctrl+0 fits, Ctrl+plus and Ctrl+mi
 explain themselves the same way, and the − / + beside each slider step it one notch (hold to
 repeat).
 
-### Cutting out pieces
-Several drawings on one page? Click **Lasso piece** (above Save all), then **drag around a drawing**
+### Cutting out doodles
+Several drawings on one page? Click **Lasso doodle** (above Save all), then **drag around a drawing**
 on the preview. When you let go the loop
-closes and the drawing becomes a **piece** in the panel on the right, while the full photo stays so
+closes and the drawing becomes a **doodle** in the panel on the right, while the full photo stays so
 you can loop around the next one.
-- **Piece settings** appear in the pieces panel, just above **Auto select piece**, while you're
-  making pieces: **Hug the drawing** and **Smoothing** while lassoing or adding with **+**,
+- **Doodle settings** appear in the doodles panel, just above **Auto select doodle**, while you're
+  making doodles: **Hug the drawing** and **Smoothing** while lassoing or adding with **+**,
   **Reach** and **Smoothing** while auto selecting.
-- **Auto select piece** (above Lasso piece): click a drawing instead of looping it. Click one of its
+- **Auto select doodle** (above Lasso doodle): click a drawing instead of looping it. Click one of its
   lines, inside a solid shape, or even inside a hole like the middle of an O. Clicking just next to
   it works too. Dragging still moves the image. **Reach** sets how far it groups nearby strokes
   (pencil drawings are made of separate lines); for solid shapes it only starts grouping above 50.
-  Moving Reach or Smoothing re-picks the selected piece. Drawings whose lines touch are picked
+  Moving Reach or Smoothing re-picks the selected doodle. Drawings whose lines touch are picked
   together; loop around one of them instead.
 - **Hug the drawing** (off until you switch it on) pulls the loop in to the drawing's
   outline when you let go. Gaps between strokes are bridged, so separate parts inside one loop stay
@@ -84,28 +84,28 @@ you can loop around the next one.
   It finds pencil and pen lines as well as solid or colored shapes (anything that stands out from
   the background along your loop), and leaves out slivers of neighbouring drawings your loop clips.
 - **Smoothing** rounds the hugged outline out; higher is rounder. It only
-  ever grows the outline, so no ink is cut off. Moving it also re-smooths the selected piece, so you
-  can loop first and tune after. Selecting a piece shows the smoothing it was made with.
-- Without line detection a piece is the photo inside its loop (transparent outside it). With it, the
-  piece is the extracted ink, cropped tight to the drawing.
-- **Save…** on a row saves that piece; **Save all…** writes every piece to a folder as
-  `<photo>_piece1.png`, `<photo>_piece2.png`, …
-- **Open…** opens the piece in a new window of its own: full-size preview, zoom, rotation and
+  ever grows the outline, so no ink is cut off. Moving it also re-smooths the selected doodle, so you
+  can loop first and tune after. Selecting a doodle shows the smoothing it was made with.
+- Without line detection a doodle is the photo inside its loop (transparent outside it). With it, the
+  doodle is the extracted ink, cropped tight to the drawing.
+- **Save…** on a row saves that doodle; **Save all…** writes every doodle to a folder as
+  `<photo>_doodle1.png`, `<photo>_doodle2.png`, …
+- **Open…** opens the doodle in a new window of its own: full-size preview, zoom, rotation and
   its own settings (starting from the main window's, including whether line detection and Apply Godot are on). **Save PNG** there saves the
-  piece. You can open several at once.
-- **+** / **−** (under a piece's thumbnail) add to or cut from that piece's outline. With
-  **+** on, drag a loop to join it to the piece (hugged to the drawing when Hug the drawing
-  is on), or click inside another piece to add all of that piece's area (the other piece stays
+  doodle. You can open several at once.
+- **+** / **−** (under a doodle's thumbnail) add to or cut from that doodle's outline. With
+  **+** on, drag a loop to join it to the doodle (hugged to the drawing when Hug the drawing
+  is on), or click inside another doodle to add all of that doodle's area (the other doodle stays
   in the list). With **−** on, drag a loop around what to remove; it cuts exactly where
   you drew, and can leave holes. Both stay on so you can make several changes; Esc or clicking the
-  button again stops. Once a piece has been changed this way, Smoothing and Reach leave it alone.
-- Lasso piece stays on so you can loop several drawings in a row. Click it again (or press
+  button again stops. Once a doodle has been changed this way, Smoothing and Reach leave it alone.
+- Lasso doodle stays on so you can loop several drawings in a row. Click it again (or press
   **Esc**) to go back to moving the image; Esc while drawing cancels just that loop.
-- While a mode is on (Auto select piece, Lasso piece, + / −, Crop), a dark banner across the top of the
+- While a mode is on (Auto select doodle, Lasso doodle, + / −, Crop), a dark banner across the top of the
   preview says which one and how to stop it.
-- Thumbnails show each piece as it will be saved, on the chosen background (a checkerboard where
+- Thumbnails show each doodle as it will be saved, on the chosen background (a checkerboard where
   it's transparent).
-- Click a row to select it (highlighted orange on the preview). **Delete** removes the selected piece.
+- Click a row to select it (highlighted orange on the preview). **Delete** removes the selected doodle.
 
 ## Command line
 ```
