@@ -773,6 +773,9 @@ def test_theme():
         assert not doodle_gui._THEME["dark"]
         assert not app.dark.get() and app.canvas.cget("bg") == LIGHT["canvas"]
         assert app._rows[0][0].cget("bg") == LIGHT["row_sel"]
+        for pal in (LIGHT, DARK):           # the selected card is a gray shade, not a color
+            r, g, b = (int(pal["row_sel"][k:k + 2], 16) for k in (1, 3, 5))
+            assert r == g == b, pal["row_sel"]
         root.destroy()
     doodle_gui._THEME["dark"] = start
     print("theme ok")
@@ -1242,6 +1245,24 @@ def test_piece_add_cut_gui():
         assert app.edit_mode == (0, "cut")
         app.delete_piece(0)
         assert app.edit_mode is None
+
+        # The pieces list doesn't scroll when every card fits
+        lc = app.list_canvas
+        app.add_piece(circle_loop())
+        root.update()
+        y0 = app._rows[0][0].winfo_rooty()
+        for n in (-5, 5, -5):
+            lc.yview_scroll(n, "units")
+        root.update()
+        assert lc.yview() == (0.0, 1.0) and app._rows[0][0].winfo_rooty() == y0
+        for _ in range(8):                      # too many to fit: now it scrolls
+            app.add_piece(circle_loop())
+        root.update()
+        lc.yview_scroll(5, "units")
+        assert lc.yview()[0] > 0
+        app.clear_pieces()
+        root.update()
+        assert lc.yview()[0] == 0.0, "back at the top once the list fits again"
         root.destroy()
     print("piece add/cut ok")
 

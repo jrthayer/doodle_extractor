@@ -39,10 +39,10 @@ SLIDER_TRACK = 18             # slider track thickness (Tk's default is 15)
 STEP_BTN_W = 22             # width of a slider's − / + button (px), taken from the slider
 # Colors for the classic Tk widgets (ttk widgets get theirs from the ttk theme)
 LIGHT = dict(bg="SystemButtonFace", fg="SystemButtonText", muted="#555555", canvas="#808080",
-             row="#f4f4f4", row_sel="#ffe2bf", trough="SystemScrollbar",
+             row="#f4f4f4", row_sel="#dcdcdc", trough="SystemScrollbar",
              active="SystemButtonFace", field="SystemWindow", field_fg="SystemWindowText")
 DARK = dict(bg="#202020", fg="#e8e8e8", muted="#a0a0a0", canvas="#2d2d2d",
-            row="#2b2b2b", row_sel="#5c4020", trough="#2d2d2d", active="#3e3e3e",
+            row="#2b2b2b", row_sel="#3d3d3d", trough="#2d2d2d", active="#3e3e3e",
             field="#2d2d2d", field_fg="#e8e8e8",
             button="#333333", hover="#3e3e3e", pressed="#1f5f99", border="#4a4a4a",
             disabled="#777777")
@@ -497,8 +497,22 @@ class DoodleApp:
         self.list_canvas.pack(side="left", fill="both", expand=True)
         self.list_inner = tk.Frame(self.list_canvas)
         self.list_canvas.create_window((0, 0), window=self.list_inner, anchor="nw")
-        self.list_inner.bind("<Configure>", lambda e: self.list_canvas.configure(
-            scrollregion=self.list_canvas.bbox("all")))
+        self.list_inner.bind("<Configure>", lambda e: self._update_list_region())
+        self.list_canvas.bind("<Configure>", lambda e: self._update_list_region())
+
+    def _list_overflows(self):
+        """True when the piece cards are taller than the visible list."""
+        box = self.list_canvas.bbox("all")
+        return box is not None and box[3] > self.list_canvas.winfo_height()
+
+    def _update_list_region(self):
+        """Scroll region = the cards, but never shorter than the list itself:
+        when everything fits there's nothing to scroll."""
+        box = self.list_canvas.bbox("all") or (0, 0, 0, 0)
+        h = max(box[3], self.list_canvas.winfo_height())
+        self.list_canvas.configure(scrollregion=(0, 0, max(box[2], 1), h))
+        if not self._list_overflows():
+            self.list_canvas.yview_moveto(0)
 
     def _wheel(self, e):
         """Mouse wheel: zoom over the preview, scroll over the pieces list.
@@ -514,7 +528,8 @@ class DoodleApp:
             return True
         while w is not None:
             if w is self.list_canvas:
-                self.list_canvas.yview_scroll(int(-e.delta / 120), "units")
+                if self._list_overflows():
+                    self.list_canvas.yview_scroll(int(-e.delta / 120), "units")
                 return True
             w = w.master
         return False
@@ -1134,6 +1149,8 @@ class DoodleApp:
     def _rebuild_rows(self):
         for child in self.list_inner.winfo_children():
             child.destroy()
+        if not self.pieces:     # Tk keeps an emptied frame's size otherwise
+            self.list_inner.configure(height=1)
         self._rows, self._thumbs = [], []
         if not hasattr(self, "_blank"):  # sizes empty thumbnails in pixels, not characters
             self._blank = tk.PhotoImage(width=THUMB, height=THUMB)
@@ -1171,6 +1188,9 @@ class DoodleApp:
                 widget.bind("<Button-1>", lambda e, i=i: self.select_piece(i))
             self._rows.append((row, thumb, text, info, btns, col, edit_box))
             self._thumbs.append(None)
+        # An emptied list doesn't always send <Configure>; fix the scroll region now
+        self.list_inner.update_idletasks()
+        self._update_list_region()
 
     def _update_rows(self):
         """Refresh piece thumbnails and sizes from the current result."""
