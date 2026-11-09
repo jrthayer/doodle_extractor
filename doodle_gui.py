@@ -36,16 +36,21 @@ EDIT_TIPS = {"add": "Add area: loop more of the drawing, or click another piece"
              "cut": "Cut area: loop what to remove from this piece"}
 BANNER_H = 34                 # mode banner height over the preview (px)
 SLIDER_TRACK = 18             # slider track thickness (Tk's default is 15)
-STEP_BTN_W = 22             # width of a slider's − / + button (px), taken from the slider
+OPT_PADX, OPT_PADY = 8, 8     # padding inside the highlighted piece-settings slot
+STEP_BTN_W = 22           # width of a slider's − / + button (px), taken from the slider
 # Colors for the classic Tk widgets (ttk widgets get theirs from the ttk theme)
 LIGHT = dict(bg="SystemButtonFace", fg="SystemButtonText", muted="#555555", canvas="#808080",
              row="#f4f4f4", row_sel="#dcdcdc", trough="SystemScrollbar",
-             active="SystemButtonFace", field="SystemWindow", field_fg="SystemWindowText")
+             active="SystemButtonFace", field="SystemWindow", field_fg="SystemWindowText",
+             button="#e4e4e4", hover="#d6d6d6", pressed="#c2c2c2", border="#adadad",
+             disabled="#9a9a9a")
 DARK = dict(bg="#202020", fg="#e8e8e8", muted="#a0a0a0", canvas="#2d2d2d",
             row="#2b2b2b", row_sel="#3d3d3d", trough="#2d2d2d", active="#3e3e3e",
             field="#2d2d2d", field_fg="#e8e8e8",
-            button="#333333", hover="#3e3e3e", pressed="#1f5f99", border="#4a4a4a",
+            button="#333333", hover="#3e3e3e", pressed="#555555", border="#4a4a4a",
             disabled="#777777")
+# "pressed" is also the "on" color of toggle buttons and the highlight behind the
+# piece settings that belong to them
 _THEME = {"dark": None}       # None = not decided yet (follows Windows on first window)
 
 
@@ -67,41 +72,42 @@ def palette():
 def _configure_style(root, dark):
     """Set the ttk theme for the whole program (all windows share it)."""
     style = ttk.Style(root)
-    if not dark:
-        style.theme_use("vista" if "vista" in style.theme_names() else "default")
-        list_bg, list_fg = LIGHT["field"], LIGHT["field_fg"]
-    else:
-        p = DARK
-        style.theme_use("clam")   # the native Windows theme can't be recolored
-        style.configure(".", background=p["bg"], foreground=p["fg"],
-                        fieldbackground=p["field"], bordercolor=p["border"],
-                        lightcolor=p["button"], darkcolor=p["button"],
-                        troughcolor=p["trough"], selectbackground=p["pressed"],
-                        selectforeground="#ffffff", insertcolor=p["fg"],
-                        arrowcolor=p["fg"], focuscolor=p["fg"])
-        style.map(".", background=[("disabled", p["bg"])],
-                  foreground=[("disabled", p["disabled"])])
-        for name in ("TButton", "TCombobox", "TSpinbox", "TScrollbar"):
-            style.configure(name, background=p["button"], lightcolor=p["button"],
-                            darkcolor=p["button"], bordercolor=p["border"],
-                            arrowcolor=p["fg"])
-        hover = [("pressed", p["pressed"]), ("active", p["hover"])]
-        style.map("TButton", background=hover, lightcolor=hover, darkcolor=hover)
-        style.map("TScrollbar", background=[("active", p["hover"])])
-        style.configure("TCheckbutton", indicatorbackground=p["field"],
-                        indicatorforeground=p["fg"])
-        style.map("TCheckbutton", background=[("active", p["bg"])],
-                  indicatorbackground=[("pressed", p["hover"]), ("disabled", p["bg"])])
-        style.map("TCombobox", fieldbackground=[("readonly", p["field"])],
-                  foreground=[("readonly", p["fg"])],
-                  selectbackground=[("readonly", p["field"])],
-                  selectforeground=[("readonly", p["fg"])],
-                  background=[("active", p["hover"])])
-        style.map("TSpinbox", background=[("active", p["hover"])])
-        style.configure("TLabelframe", background=p["bg"], bordercolor=p["border"])
-        style.configure("TLabelframe.Label", background=p["bg"], foreground=p["fg"])
-        style.configure("TSeparator", background=p["border"])
-        list_bg, list_fg = p["field"], p["fg"]
+    p = DARK if dark else LIGHT
+    style.theme_use("clam")   # the native Windows theme can't be recolored
+    style.configure(".", background=p["bg"], foreground=p["fg"],
+                    fieldbackground=p["field"], bordercolor=p["border"],
+                    lightcolor=p["button"], darkcolor=p["button"],
+                    troughcolor=p["trough"], selectbackground=p["pressed"],
+                    selectforeground=p["fg"], insertcolor=p["fg"],
+                    arrowcolor=p["fg"], focuscolor=p["fg"])
+    style.map(".", background=[("disabled", p["bg"])],
+              foreground=[("disabled", p["disabled"])])
+    for name in ("TButton", "TCombobox", "TSpinbox", "TScrollbar"):
+        style.configure(name, background=p["button"], lightcolor=p["button"],
+                        darkcolor=p["button"], bordercolor=p["border"],
+                        arrowcolor=p["fg"])
+    hover = [("pressed", p["pressed"]), ("active", p["hover"])]
+    style.map("TButton", background=hover, lightcolor=hover, darkcolor=hover)
+    style.map("TScrollbar", background=[("active", p["hover"])])
+    style.configure("TCheckbutton", indicatorbackground=p["field"],
+                    indicatorforeground=p["fg"])
+    style.map("TCheckbutton", background=[("active", p["bg"])],
+              indicatorbackground=[("pressed", p["hover"]), ("disabled", p["bg"])])
+    style.map("TCombobox", fieldbackground=[("readonly", p["field"])],
+              foreground=[("readonly", p["fg"])],
+              selectbackground=[("readonly", p["field"])],
+              selectforeground=[("readonly", p["fg"])],
+              background=[("active", p["hover"])])
+    style.map("TSpinbox", background=[("active", p["hover"])])
+    style.configure("TLabelframe", background=p["bg"], bordercolor=p["border"])
+    style.configure("TLabelframe.Label", background=p["bg"], foreground=p["fg"])
+    style.configure("TSeparator", background=p["border"])
+    # The piece settings slot, highlighted in the "on" color of its button
+    style.configure("Opts.TFrame", background=p["pressed"])
+    style.configure("Opts.TLabel", background=p["pressed"])
+    style.configure("Opts.TCheckbutton", background=p["pressed"])
+    style.map("Opts.TCheckbutton", background=[("active", p["pressed"])])
+    list_bg, list_fg = p["field"], p["fg"]
     # Slider − / +: as short as the track, so keep only the button's frame and a
     # centered label (no focus ring or padding eating the room)
     frame, opts = style.layout("TButton")[0]
@@ -245,6 +251,7 @@ class DoodleApp:
         self.reach = tk.IntVar(value=50)               # Auto select: how much a click grabs
         self.pick_mode = tk.BooleanVar(value=False)    # left-click picks objects
         self.edit_mode = None     # (piece index, "add" | "cut"): loops change that piece
+        self._opts_shown = None   # which piece settings the panel shows (see _show_opts)
         self._pick_press = None
         self._repick_job = None
         self._smooth_job = None
@@ -257,6 +264,7 @@ class DoodleApp:
             _THEME["dark"] = system_prefers_dark()
         self.dark = tk.BooleanVar(value=_THEME["dark"])
         self._scales, self._muted = [], []   # classic Tk sliders / gray hint labels to recolor
+        self._opt_scales = []                # sliders on the highlighted piece settings
         _configure_style(root, _THEME["dark"])
 
         self._build_ui()
@@ -373,16 +381,14 @@ class DoodleApp:
         self.extract_holder.pack(fill="x")
         self._build_extract_section(self.extract_holder)
 
-        ttk.Separator(side).pack(fill="x", pady=10)
         self.crop_button = ttk.Button(side, text="Crop", command=self.toggle_crop)
         tip(self.crop_button, "Show the crop box; click again to close it")
-        self.crop_button.pack(anchor="w")
+        self.crop_button.pack(anchor="w", pady=(14, 0))
         self.crop_holder = ttk.Frame(side)   # keeps the crop section's place in the column
         self.crop_holder.pack(fill="x")
         self._build_crop_section(self.crop_holder)
 
-        ttk.Separator(side).pack(fill="x", pady=10)
-        ttk.Label(side, text="Rotate photo").pack(anchor="w")
+        ttk.Label(side, text="Rotate photo").pack(anchor="w", pady=(14, 0))
         row = ttk.Frame(side)
         row.pack(anchor="w", pady=(4, 0))
         tip(ttk.Button(row, text="⟲ 90°", command=lambda: self.rotate_photo(-1)),
@@ -398,27 +404,30 @@ class DoodleApp:
 
     def _build_extract_section(self, parent):
         """Ink extraction settings, shown only while Extract ink is on."""
-        sec = self.extract_section = ttk.LabelFrame(parent, text="Extract ink", padding=8)
+        # Highlighted in the "on" color of the Extract ink button, like the piece settings
+        sec = self.extract_section = ttk.Frame(parent, style="Opts.TFrame",
+                                               padding=(10, 0, 10, 10))
         self.black_scale = self._slider(
             sec, "Black (solid ink at or below)", self.black, 0, 255, self.on_black, length=220,
-            tip="Ink this dark or darker is fully solid. Raise it if line middles look gray.")
+            style="Opts", tip="Ink this dark or darker is fully solid. Raise it if line middles look gray.")
         self.white_scale = self._slider(
             sec, "White (transparent at or above)", self.white, 0, 255, self.on_white, length=220,
-            tip="Anything this light or lighter turns transparent. Lower it if the grid shows; "
+            style="Opts", tip="Anything this light or lighter turns transparent. Lower it if the grid shows; "
                 "raise it if lines break.")
         self.specks_scale = self._slider(
             sec, "Remove specks smaller than (px)", self.min_speck, 0, 100,
-            lambda v: self.schedule_refresh(), length=220,
+            lambda v: self.schedule_refresh(), length=220, style="Opts",
             tip="Erase dots smaller than this many pixels")
         tip = ("• Grid showing? Lower White.\n"
                "• Lines broken? Raise White.\n"
                "• Line middles gray? Raise Black.\n"
                "• Color it in Godot: Self Modulate.")
-        self.tips = ttk.Label(sec, text=tip, justify="left")
+        self.tips = ttk.Label(sec, text=tip, justify="left", style="Opts.TLabel")
         self._muted.append(self.tips)
         self.tips.pack(anchor="w", pady=(10, 0))
         self.paper_check = ttk.Checkbutton(sec, text="Detect paper (ignore the desk)",
-                                           variable=self.detect_paper, command=self.reprepare)
+                                           variable=self.detect_paper, command=self.reprepare,
+                                           style="Opts.TCheckbutton")
         self._tip(self.paper_check, "Ignore the desk around the page")
         self.paper_check.pack(anchor="w", pady=(10, 0))
         self._tip(ttk.Button(sec, text="Reset sliders", command=self.reset),
@@ -427,15 +436,16 @@ class DoodleApp:
 
     def _build_crop_section(self, parent):
         """The crop settings, shown only while cropping."""
-        sec = self.crop_section = ttk.LabelFrame(parent, text="Crop", padding=8)
+        # Highlighted in the "on" color of the Crop button, like the piece settings
+        sec = self.crop_section = ttk.Frame(parent, style="Opts.TFrame", padding=10)
         self._tip(ttk.Checkbutton(sec, text="Crop to the drawing", variable=self.crop_fit,
-                                  command=self.on_crop_fit),
+                                  command=self.on_crop_fit, style="Opts.TCheckbutton"),
                   "Snap the box tight to the ink and follow the sliders").grid(
             row=0, column=0, columnspan=4, sticky="w", pady=(0, 6))
         self.crop_spins = {}
         for i, (key, label) in enumerate((("x", "X"), ("y", "Y"), ("w", "Width"), ("h", "Height"))):
             r, c = divmod(i, 2)
-            ttk.Label(sec, text=label).grid(row=1 + r, column=2 * c, sticky="w",
+            ttk.Label(sec, text=label, style="Opts.TLabel").grid(row=1 + r, column=2 * c, sticky="w",
                                             padx=(0 if c == 0 else 10, 4), pady=2)
             sp = ttk.Spinbox(sec, from_=0, to=99999, increment=1, width=7,
                              textvariable=self.crop_vars[key], command=self._crop_from_spins)
@@ -443,7 +453,7 @@ class DoodleApp:
             sp.bind("<Return>", lambda e: self._crop_from_spins() or "break")
             sp.bind("<FocusOut>", lambda e: self._crop_from_spins())
             self.crop_spins[key] = sp
-        btns = ttk.Frame(sec)
+        btns = ttk.Frame(sec, style="Opts.TFrame")
         btns.grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 0))
         self._tip(ttk.Button(btns, text="Save crop", command=self.save_crop),
                   "Apply the crop (Enter)").pack(side="left")
@@ -475,18 +485,31 @@ class DoodleApp:
                                       command=lambda: self.set_pick_mode(not self.pick_mode.get()))
         tip(self.pick_button, "Click a drawing to make it a piece; dragging still moves the image")
         self.pick_button.pack(side="bottom", fill="x", pady=(6, 0))
-        smooth_box = ttk.Frame(panel)
-        smooth_box.pack(side="bottom", fill="x")
+
+        # Piece settings slot: always the same height (so the list doesn't jump);
+        # only the settings for the current mode show in it (see _show_opts)
+        self.opts_frame = ttk.Frame(panel)
+        self.opts_frame.pack(side="bottom", fill="x", pady=(8, 0))
+        self.opts_frame.pack_propagate(False)
+        frames = self._opt_frames = {k: ttk.Frame(self.opts_frame, style="Opts.TFrame")
+                                     for k in ("hug", "reach", "smooth")}
+        self.hug_check = tip(ttk.Checkbutton(frames["hug"], text="Hug the drawing",
+                                             variable=self.hug, style="Opts.TCheckbutton"),
+                             "Pull each new loop in to the drawing's outline")
+        self.hug_check.pack(anchor="w", pady=(8, 0))
         self.reach_scale = self._slider(
-            smooth_box, "Reach (Auto select)", self.reach, 0, 100, self.schedule_repick,
-            length=230, tip="How far Auto select groups nearby strokes into one piece "
-                            "(solid shapes: above 50)")
+            frames["reach"], "Reach (Auto select)", self.reach, 0, 100, self.schedule_repick,
+            length=230, style="Opts",
+            tip="How far Auto select groups nearby strokes into one piece "
+                "(solid shapes: above 50)")
         self.smooth_scale = self._slider(
-            smooth_box, "Smoothing", self.smooth, 0, 100, self.schedule_resmooth, length=230,
+            frames["smooth"], "Smoothing", self.smooth, 0, 100, self.schedule_resmooth,
+            length=230, style="Opts",
             tip="How much hugged outlines are rounded out; it never cuts off ink")
-        tip(ttk.Checkbutton(panel, text="Hug the drawing", variable=self.hug),
-            "Pull each new loop in to the drawing's outline").pack(side="bottom", anchor="w",
-                                                                    pady=(6, 0))
+        panel.update_idletasks()
+        h = {k: f.winfo_reqheight() for k, f in frames.items()}
+        self.opts_frame.configure(height=max(h["hug"], h["reach"]) + h["smooth"]
+                                  + OPT_PADY)
 
         wrap = ttk.Frame(panel)
         wrap.pack(fill="both", expand=True, pady=(6, 0))
@@ -522,9 +545,9 @@ class DoodleApp:
         except (tk.TclError, KeyError):
             return False
         if w is self.canvas:
-            factor = ZOOM_STEP if e.delta > 0 else 1 / ZOOM_STEP
             self.zoom_at(e.x_root - self.canvas.winfo_rootx(),
-                         e.y_root - self.canvas.winfo_rooty(), factor)
+                         e.y_root - self.canvas.winfo_rooty(),
+                         ZOOM_STEP if e.delta > 0 else 1 / ZOOM_STEP)
             return True
         while w is not None:
             if w is self.list_canvas:
@@ -534,13 +557,51 @@ class DoodleApp:
             w = w.master
         return False
 
-    def _slider(self, parent, label, var, lo, hi, command, resolution=1, length=240, tip=None):
+    @staticmethod
+    def _step_var(var, lo, hi, resolution, command, sign):
+        """Move a slider variable one notch; returns False at the end of its range."""
+        return DoodleApp._set_var(var, lo, hi, resolution, command,
+                                  var.get() + sign * resolution)
+
+    @staticmethod
+    def _set_var(var, lo, hi, resolution, command, value):
+        """Set a slider variable (snapped and clamped) and run its command, as
+        dragging the slider would. Returns False if the value didn't change."""
+        old = var.get()
+        v = min(max(round(value / resolution) * resolution, lo), hi)
+        if isinstance(var, tk.IntVar):
+            v = int(v)
+        if v == old:
+            return False
+        var.set(v)
+        command(str(v))
+        return True
+
+    def _hold_repeat(self, step):
+        """Run `step()` now and, while the button is held, again after 400 ms
+        and then every 60 ms, until it returns False or `_stop_repeat()`."""
+        self._stop_repeat()
+        step()
+
+        def repeat():
+            self._step_job = self.root.after(60, repeat) if step() else None
+        self._step_job = self.root.after(400, repeat)
+
+    def _stop_repeat(self):
+        if getattr(self, "_step_job", None):
+            self.root.after_cancel(self._step_job)
+        self._step_job = None
+
+    def _slider(self, parent, label, var, lo, hi, command, resolution=1, length=240, tip=None,
+                style=None):
         """A labelled slider with − / + buttons that step it one notch (hold to
         repeat). `tip` is its status-bar hint. Returns the tk.Scale; its row
-        frame is `scale.master` and its step function `scale.step(+1 | -1)`."""
-        name = ttk.Label(parent, text=label)
+        frame is `scale.master` and its step function `scale.step(+1 | -1)`.
+        `style="Opts"` puts it on the highlighted piece-settings background."""
+        frame_style = f"{style}.TFrame" if style else "TFrame"
+        name = ttk.Label(parent, text=label, style=f"{style}.TLabel" if style else "TLabel")
         name.pack(anchor="w", pady=(8, 0))
-        row = ttk.Frame(parent)
+        row = ttk.Frame(parent, style=frame_style)
         row.pack(anchor="w")
         length = max(length - 2 * STEP_BTN_W, 80)   # the buttons take the room
         scale = tk.Scale(row, from_=lo, to=hi, orient="horizontal", variable=var,
@@ -548,35 +609,20 @@ class DoodleApp:
                          width=SLIDER_TRACK)
 
         def step(sign):
-            old = var.get()
-            v = min(max(round((old + sign * resolution) / resolution) * resolution, lo), hi)
-            if isinstance(var, tk.IntVar):
-                v = int(v)
-            if v == old:
-                return False
-            var.set(v)
-            command(str(v))
-            return True
+            return self._step_var(var, lo, hi, resolution, command, sign)
 
         def press(sign):
-            release()
-            step(sign)
-            self._step_job = self.root.after(400, lambda: repeat(sign))
-
-        def repeat(sign):
-            self._step_job = self.root.after(60, lambda: repeat(sign)) if step(sign) else None
+            self._hold_repeat(lambda: step(sign))
 
         def release(_e=None):
-            if getattr(self, "_step_job", None):
-                self.root.after_cancel(self._step_job)
-            self._step_job = None
+            self._stop_repeat()
 
         # Buttons exactly as tall as the slider's track, bottoms lined up with it
         track = int(scale.cget("width")) + 2 * int(scale.cget("borderwidth"))
         edge = int(scale.cget("highlightthickness"))
         buttons, holders = [], []
         for sign, text in ((-1, "−"), (1, "+")):
-            holder = ttk.Frame(row, width=STEP_BTN_W, height=track)
+            holder = ttk.Frame(row, width=STEP_BTN_W, height=track, style=frame_style)
             holder.pack_propagate(False)
             b = ttk.Button(holder, text=text, style="Step.TButton")
             b.pack(fill="both", expand=True)
@@ -592,7 +638,7 @@ class DoodleApp:
         if tip:
             for w in (name, scale, *buttons):
                 self._tip(w, tip)
-        self._scales.append(scale)
+        (self._opt_scales if style == "Opts" else self._scales).append(scale)
         return scale
 
     def _apply_theme(self):
@@ -606,6 +652,9 @@ class DoodleApp:
         for scale in self._scales:
             scale.configure(bg=p["bg"], fg=p["fg"], troughcolor=p["trough"],
                             activebackground=p["active"], highlightbackground=p["bg"])
+        for scale in self._opt_scales:      # on the highlighted piece settings
+            scale.configure(bg=p["pressed"], fg=p["fg"], troughcolor=p["trough"],
+                            activebackground=p["hover"], highlightbackground=p["pressed"])
         for label in self._muted:
             label.configure(foreground=p["muted"])
         self._color_rows()
@@ -1101,7 +1150,7 @@ class DoodleApp:
         if self.flat is not None and not self.cropping:
             self.status.set("Auto select piece: click a drawing's line or a solid shape. Esc stops."
                             if on else "Drag to move, scroll to zoom.")
-        self._draw_banner()
+        self._draw_overlays()
 
     def save_piece(self, i, p):
         if not self._ready():
@@ -1573,7 +1622,7 @@ class DoodleApp:
             self.tips.pack(anchor="w", pady=(10, 0), after=self.specks_scale.master)
         self.canvas.config(cursor=self._mode_cursor())
         self.fit = True
-        self._draw_banner()
+        self._draw_overlays()
 
     def set_crop_box(self, x, y, w, h, user=True):
         """Move/resize the crop box (clamped to the image)."""
@@ -1718,7 +1767,7 @@ class DoodleApp:
         if self.flat is not None and not self.cropping:
             self.status.set("Lasso piece: drag around a drawing. Esc stops." if on
                             else "Drag to move, scroll to zoom.")
-        self._draw_banner()
+        self._draw_overlays()
 
     def _left_press(self, e):
         if self.cropping:
@@ -1836,6 +1885,42 @@ class DoodleApp:
         self.canvas.create_text(cw / 2, BANNER_H / 2, text=text, fill="white",
                                 font=("Segoe UI", 11, "bold"), tags="banner", state="disabled")
 
+    def _draw_overlays(self):
+        self._draw_banner()
+        self._show_opts()
+
+    # -------------------------------------------------------- piece settings
+
+    def _visible_opts(self):
+        """Which piece options matter in the current mode (none = no box)."""
+        if self.cropping or self.flat is None:
+            return []
+        if self.edit_mode:
+            return ["hug", "smooth"] if self.edit_mode[1] == "add" else []
+        if self.pick_mode.get():
+            return ["reach", "smooth"]
+        if self.select_mode.get():
+            return ["hug", "smooth"]
+        return []
+
+    def _show_opts(self):
+        """Show only the piece settings that matter right now in their slot
+        above Auto select piece (the slot keeps its size, so nothing jumps)."""
+        if not hasattr(self, "_opt_frames"):
+            return
+        keys = self._visible_opts()
+        if keys == self._opts_shown:
+            return
+        self._opts_shown = keys
+        for f in self._opt_frames.values():
+            f.pack_forget()
+        for n, k in enumerate(keys):     # padding inside the highlight; the last gets the bottom
+            last = n == len(keys) - 1
+            self._opt_frames[k].pack(fill="x", padx=OPT_PADX,
+                                     pady=(0, OPT_PADY if last else 0))
+        # Highlighted in the "on" color of the button these settings belong to
+        self.opts_frame.configure(style="Opts.TFrame" if keys else "TFrame")
+
     def _view_crop(self, arr):
         """The visible part of a working-image layer, resized to screen pixels.
         Returns (layer, x0, y0) with (x0, y0) in photo coords, or None."""
@@ -1918,7 +2003,7 @@ class DoodleApp:
                            (bx, by), (mx, by), (ax, by), (ax, my)):
                 self.canvas.create_rectangle(hx - 5, hy - 5, hx + 5, hy + 5,
                                              fill="white", outline=CROP_COLOR, width=2)
-        self._draw_banner()
+        self._draw_overlays()
 
 
 def main():

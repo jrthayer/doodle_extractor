@@ -748,6 +748,9 @@ def test_theme():
         root.update()
         assert ttk.Style(root).theme_use() == "clam"
         assert "light" in app.theme_tip and app.theme_button.cget("image")
+        assert (ttk.Style(root).lookup("TButton", "background", ["pressed"])
+                == DARK["pressed"])
+        assert str(app.smooth_scale.cget("bg")) == DARK["pressed"], "settings highlight"
         for a in (app, editor):
             assert a.dark.get() and a.canvas.cget("bg") == DARK["canvas"]
             assert str(a._scales[0].cget("bg")) == DARK["bg"]
@@ -765,17 +768,20 @@ def test_theme():
 
         set_theme(False)
         root.update()
-        assert ttk.Style(root).theme_use() == "vista"
+        assert ttk.Style(root).theme_use() == "clam"     # recolorable, like dark mode
         assert "dark" in app.theme_tip
+        assert (ttk.Style(root).lookup("TButton", "background", ["pressed"])
+                == LIGHT["pressed"])
         app.theme_button.event_generate("<Button-1>")   # clicking the sun/moon toggles
         assert doodle_gui._THEME["dark"] and editor.dark.get()
         app.toggle_theme()
         assert not doodle_gui._THEME["dark"]
         assert not app.dark.get() and app.canvas.cget("bg") == LIGHT["canvas"]
         assert app._rows[0][0].cget("bg") == LIGHT["row_sel"]
-        for pal in (LIGHT, DARK):           # the selected card is a gray shade, not a color
-            r, g, b = (int(pal["row_sel"][k:k + 2], 16) for k in (1, 3, 5))
-            assert r == g == b, pal["row_sel"]
+        for pal in (LIGHT, DARK):   # selected card and "on" state are gray shades, not colors
+            for key in ("row_sel", "pressed"):
+                r, g, b = (int(pal[key][k:k + 2], 16) for k in (1, 3, 5))
+                assert r == g == b, (key, pal[key])
         root.destroy()
     doodle_gui._THEME["dark"] = start
     print("theme ok")
@@ -1175,15 +1181,46 @@ def test_piece_add_cut_gui():
         assert app.status.get().startswith("Anything this light")
         app.white_scale.event_generate("<Leave>")
         assert app.status.get() == "before"
-        minus, plus = app.smooth_scale.step_buttons
+        minus, plus = app.white_scale.step_buttons
         assert minus.cget("text") == "−" and plus.cget("text") == "+"
         root.update()
-        sc = app.smooth_scale
+        sc = app.white_scale
         track = int(sc.cget("width")) + 2 * int(sc.cget("borderwidth"))
         track_bottom = sc.winfo_rooty() + sc.winfo_height() - int(sc.cget("highlightthickness"))
         for b in (minus, plus):
             assert abs(b.winfo_height() - track) <= 1, (b.winfo_height(), track)
             assert abs(b.winfo_rooty() + b.winfo_height() - track_bottom) <= 2
+
+        # Piece settings slot above Auto select piece: fixed size, only what matters
+        root.update()
+        shown = lambda: [k for k, f in app._opt_frames.items() if f.winfo_ismapped()]
+        slot_h, list_h = app.opts_frame.winfo_height(), app.list_canvas.winfo_height()
+        assert shown() == [] and slot_h > 50
+        for mode, want in (("select", ["hug", "smooth"]), ("pick", ["reach", "smooth"]),
+                           ("cut", []), ("add", ["hug", "smooth"]), (None, [])):
+            app.set_select_mode(mode == "select")
+            app.set_pick_mode(mode == "pick")
+            app.set_edit_mode((0, mode) if mode in ("cut", "add") else None)
+            root.update()
+            assert shown() == want, (mode, shown())
+            assert str(app.opts_frame.cget("style")) == ("Opts.TFrame" if want else "TFrame")
+            assert app.opts_frame.winfo_height() == slot_h, "the slot keeps its size"
+            assert app.list_canvas.winfo_height() == list_h, "the list doesn't jump"
+            for k in want:                               # everything shown fits
+                f = app._opt_frames[k]
+                assert f.winfo_y() + f.winfo_height() <= slot_h, (mode, k)
+        app.set_select_mode(True)
+        root.update()
+        s0 = app.smooth.get()
+        assert app.smooth_scale.step(1) and app.smooth.get() == s0 + 1
+        assert app._smooth_job is not None
+        app.smooth_scale.step(-1)
+        app.status.set("before")
+        app.smooth_scale.event_generate("<Enter>")
+        assert app.status.get().startswith("How much hugged outlines")
+        app.smooth_scale.event_generate("<Leave>")
+        assert app.status.get() == "before"
+        app.set_select_mode(False)
 
         # + Add area: a loop elsewhere joins the piece as a second outline
         app._rows[0][6].winfo_children()[0].invoke()

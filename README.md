@@ -49,18 +49,21 @@ Several drawings on one page? Click **Lasso piece** (above Save all), then **dra
 on the preview. When you let go the loop
 closes and the drawing becomes a **piece** in the panel on the right, while the full photo stays so
 you can loop around the next one.
+- **Piece settings** appear in the pieces panel, just above **Auto select piece**, while you're
+  making pieces: **Hug the drawing** and **Smoothing** while lassoing or adding with **+**,
+  **Reach** and **Smoothing** while auto selecting.
 - **Auto select piece** (above Lasso piece): click a drawing instead of looping it. Click one of its
   lines, inside a solid shape, or even inside a hole like the middle of an O. Clicking just next to
   it works too. Dragging still moves the image. **Reach** sets how far it groups nearby strokes
   (pencil drawings are made of separate lines); for solid shapes it only starts grouping above 50.
   Moving Reach or Smoothing re-picks the selected piece. Drawings whose lines touch are picked
   together; loop around one of them instead.
-- **Hug the drawing** (on by default, above Lasso piece) pulls the loop in to the drawing's
+- **Hug the drawing** (on by default) pulls the loop in to the drawing's
   outline when you let go. Gaps between strokes are bridged, so separate parts inside one loop stay
   together. It never goes outside your loop. Untick it to keep loops exactly as you draw them.
   It finds pencil and pen lines as well as solid or colored shapes (anything that stands out from
   the background along your loop), and leaves out slivers of neighbouring drawings your loop clips.
-- **Smoothing** (under Hug the drawing) rounds the hugged outline out; higher is rounder. It only
+- **Smoothing** rounds the hugged outline out; higher is rounder. It only
   ever grows the outline, so no ink is cut off. Moving it also re-smooths the selected piece, so you
   can loop first and tune after. Selecting a piece shows the smoothing it was made with.
 - Without Extract ink a piece is the photo inside its loop (transparent outside it). With it, the
